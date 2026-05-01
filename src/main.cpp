@@ -2,6 +2,7 @@
 #include <fstream>
 #include "loader.h"
 #include "state.h"
+#include "executor.h"
 
 void usage();
 bool validateFile(char* fileName);
@@ -29,6 +30,8 @@ int main(int argc, char** argv) {
     exit(2);
   }
   std::cout << "loaded elf file successfully" << std::endl;
+
+  execute(state);
 }
 
 void usage() {
