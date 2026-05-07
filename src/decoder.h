@@ -348,3 +348,48 @@ static const Opcode OPCODE_TABLE[] = {
 };
 
 Opcode decodeInstruction(uint16_t& instruction);
+
+// ---------------------------------------------------------------------------
+// Decoded operand structs — one per AvrFmt, returned by decode helpers below.
+// Execute functions take these values directly instead of re-parsing raw bits.
+// ---------------------------------------------------------------------------
+
+struct OpsRdRr    { uint8_t d, r; };           // Rd_Rr
+struct OpsRdK8    { uint8_t d, k; };           // Rd_K8  (d already offset to 16..31)
+struct OpsRd      { uint8_t d; };              // Rd_only
+struct OpsRdRrMpy { uint8_t d, r; };           // Rd_Rr_mpy  (d,r already offset to 16..23)
+struct OpsRd06K6  { uint8_t d, k; };           // Rd06_K6  (d in {24,26,28,30})
+// Raw nibbles for Rd06_Rr06 — execute fn applies its own offset (MOVW ×2, MULS +16)
+struct OpsRd06Rr06 { uint8_t d, r; };
+struct OpsBOnly   { uint8_t b; };              // b_only
+struct OpsRdB     { uint8_t d, b; };           // Rd_b
+struct OpsRrB     { uint8_t r, b; };           // Rr_b
+struct OpsIOB     { uint8_t a, b; };           // IO_b
+struct OpsRdIO    { uint8_t d, a; };           // Rd_IO
+struct OpsIORr    { uint8_t a, r; };           // IO_Rr
+struct OpsK7      { int8_t k; uint8_t s; };    // k7   (k sign-extended, s = SREG bit)
+struct OpsK02     { int16_t k; };              // k02 / k02_call  (sign-extended 12-bit)
+struct OpsK22     { uint32_t k; };             // k22 / k22_call  (22-bit absolute addr)
+struct OpsLdSt    { uint8_t d, mode; };        // LD_family  (mode = instr & 0x03)
+struct OpsLdd     { uint8_t d, q; };           // LDD_family  (q = 6-bit displacement)
+struct OpsLdsSts  { uint8_t d; uint16_t addr; }; // LDS_STS
+
+// Operand decoders — each extracts fields for the matching AvrFmt.
+OpsRdRr     decodeRdRr(uint16_t instr);
+OpsRdK8     decodeRdK8(uint16_t instr);
+OpsRd       decodeRd(uint16_t instr);
+OpsRdRrMpy  decodeRdRrMpy(uint16_t instr);
+OpsRd06K6   decodeRd06K6(uint16_t instr);
+OpsRd06Rr06 decodeRd06Rr06(uint16_t instr);
+OpsBOnly    decodeBOnly(uint16_t instr);
+OpsRdB      decodeRdB(uint16_t instr);
+OpsRrB      decodeRrB(uint16_t instr);
+OpsIOB      decodeIOB(uint16_t instr);
+OpsRdIO     decodeRdIO(uint16_t instr);
+OpsIORr     decodeIORr(uint16_t instr);
+OpsK7       decodeK7(uint16_t instr);
+OpsK02      decodeK02(uint16_t instr);
+OpsK22      decodeK22(uint16_t instr, uint16_t secondWord);
+OpsLdSt     decodeLdSt(uint16_t instr);
+OpsLdd      decodeLdd(uint16_t instr);
+OpsLdsSts   decodeLdsSts(uint16_t instr, uint16_t secondWord);

@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
   }
   std::cout << "loaded elf file successfully" << std::endl;
 
-  execute(state);
+  executeProgram(state);
 }
 
 void usage() {
