@@ -56,13 +56,17 @@ bool loadFirmware(AvrState& state, char* fileName) {
     return false;
   }
 
-  // copy hex into state flash
-  if (data.size() > sizeof(state.flash)) {
-    std::cerr << "firmware size is to large" << std::endl;
+  // copy hex into state flash at the virtual address the linker specified
+  if (buffer.p_vaddr + data.size() > sizeof(state.flash)) {
+    std::cerr << "firmware segment exceeds flash bounds" << std::endl;
     file.close();
-    return false; // firmware too big for flash
+    return false;
   }
-  memcpy(state.flash, data.data(), data.size());
+  memcpy(state.flash + buffer.p_vaddr, data.data(), data.size());
+
+  // set initial PC from ELF entry point
+  state.pc = header.e_entry;
+
   file.close();
   return true;
 }

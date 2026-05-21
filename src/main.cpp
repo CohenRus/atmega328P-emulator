@@ -14,24 +14,28 @@ int main(int argc, char** argv) {
   // check args
   if (argc != 2) {
     usage();
-    exit(1);
+    return 1;
   }
 
   // check file
   if (!validateFile(argv[1])) {
     std::cout << "invalid file" << std::endl;
-    exit(1);
+    return 1;
   }
 
 
   // load elf file
   if (!loadFirmware(state, argv[1])) {
     std::cout << "failed to load elf file" << std::endl;
-    exit(2);
+    return 2;
   }
   std::cout << "loaded elf file successfully" << std::endl;
 
-  executeProgram(state);
+  if (!executeProgram(state)) {
+    std::cerr << "emulation halted with error" << std::endl;
+    return 3;
+  }
+  return 0;
 }
 
 void usage() {

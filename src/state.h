@@ -5,7 +5,7 @@
 #include <cstdint>
 
 #define AVR_FLASH_SIZE  32768
-#define AVR_SRAM_SIZE   2048
+#define AVR_SRAM_SIZE   2304  // data-space addrs 0x20..0x8FF (2048 B SRAM + 256 B I/O)
 #define AVR_EEPROM_SIZE 1024
 
 struct AvrState {

@@ -1,11 +1,29 @@
 #include "executor.h"
+#include "memory.h"
 
+// ---------------------------------------------------------------------------
+// SREG bit indices (matches ATmega328P datasheet)
+// ---------------------------------------------------------------------------
+#define SREG_C  0
+#define SREG_Z  1
+#define SREG_N  2
+#define SREG_V  3
+#define SREG_S  4
+#define SREG_H  5
+#define SREG_T  6
+#define SREG_I  7
+
+// ---------------------------------------------------------------------------
+// Execute loop
+// ---------------------------------------------------------------------------
 bool executeProgram(AvrState& state) {
   clearState(state);
+  uartInit();
 
   bool running = true;
   uint16_t instruction;
   while (running) {
+    uartPoll();
     if (state.pc > AVR_FLASH_SIZE) {
       std::cout << "end of memory reached" << std::endl;
       return false;
@@ -35,9 +53,9 @@ bool executeProgram(AvrState& state) {
 bool clearState(AvrState& state) {
   // registers
   for (uint8_t i = 0; i < 32; ++i) state.r[i] = 0;
-  state.pc   = 0;
+  state.pc   = 0;       // fallback; loadFirmware() overwrites with ELF entry point
   state.sreg = 0;
-  state.sp   = 0;
+  state.sp   = 0x08FF;  // RAMEND for ATmega328P
 
   // memory
   for (int i = 0; i < AVR_SRAM_SIZE;   ++i) state.sram[i]   = 0;
@@ -209,538 +227,754 @@ bool executeInstruction(AvrState& state, Opcode& op, uint16_t instr, uint16_t se
   return true;
 }
 
-/*
- *
- */
+// ===========================================================================
+// Arithmetic instructions
+// ===========================================================================
+
 void executeADC(AvrState& state, OpsRdRr ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    uint8_t ci = (state.sreg >> SREG_C) & 1;
+    uint16_t result16 = (uint16_t)rd + (uint16_t)rr + ci;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = ((rd & 0x0F) + (rr & 0x0F) + ci) > 0x0F;
+    bool v = ((rd ^ result8) & (rr ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */
 void executeADD(AvrState& state, OpsRdRr ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    uint16_t result16 = (uint16_t)rd + (uint16_t)rr;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = ((rd & 0x0F) + (rr & 0x0F)) > 0x0F;
+    bool v = ((rd ^ result8) & (rr ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */
 void executeADIW(AvrState& state, OpsRd06K6 ops) {
+    uint8_t  lo = state.r[ops.d];
+    uint8_t  hi = state.r[ops.d + 1];
+    uint16_t word = ((uint16_t)hi << 8) | lo;
+    uint16_t result16 = word + ops.k;
 
+    bool v = (hi & 0x80) && !(result16 & 0x8000);
+    bool n = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    bool c = !(result16 & 0x8000) && (hi & 0x80);
+    bool s = n ^ v;
+
+    state.r[ops.d]     = (uint8_t)(result16 & 0xFF);
+    state.r[ops.d + 1] = (uint8_t)(result16 >> 8);
+    state.sreg = (state.sreg & 0xE0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */
 void executeASR(AvrState& state, OpsRd ops) {
+    uint8_t rd = state.r[ops.d];
+    bool c = rd & 0x01;
+    uint8_t result8 = (rd >> 1) | (rd & 0x80);
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool v = n ^ c;
+    bool s = n ^ v;
 
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */
 void executeDEC(AvrState& state, OpsRd ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t result8 = rd - 1;
+    bool v = rd == 0x80;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool s = n ^ v;
 
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE1) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */
 void executeINC(AvrState& state, OpsRd ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t result8 = rd + 1;
+    bool v = rd == 0x7F;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool s = n ^ v;
 
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE1) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */
 void executeMUL(AvrState& state, OpsRdRr ops) {
-
+    uint16_t result16 = (uint16_t)state.r[ops.d] * (uint16_t)state.r[ops.r];
+    state.r[0] = (uint8_t)(result16 & 0xFF);
+    state.r[1] = (uint8_t)(result16 >> 8);
+    bool c = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    state.sreg = (state.sreg & 0xFC) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */
 void executeMULS(AvrState& state, OpsRd06Rr06 ops) {
-
+    int8_t rd = (int8_t)state.r[ops.d + 16];
+    int8_t rr = (int8_t)state.r[ops.r + 16];
+    int16_t result16 = (int16_t)rd * (int16_t)rr;
+    state.r[0] = (uint8_t)((uint16_t)result16 & 0xFF);
+    state.r[1] = (uint8_t)(((uint16_t)result16 >> 8) & 0xFF);
+    bool c = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    state.sreg = (state.sreg & 0xFC) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */
 void executeMULSU(AvrState& state, OpsRdRrMpy ops) {
-
+    int8_t  rd = (int8_t)state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    int16_t result16 = (int16_t)rd * (int16_t)((uint16_t)rr);
+    state.r[0] = (uint8_t)((uint16_t)result16 & 0xFF);
+    state.r[1] = (uint8_t)(((uint16_t)result16 >> 8) & 0xFF);
+    bool c = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    state.sreg = (state.sreg & 0xFC) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */ 
 void executeFMUL(AvrState& state, OpsRdRrMpy ops) {
-
+    uint16_t product = (uint16_t)state.r[ops.d] * (uint16_t)state.r[ops.r];
+    uint16_t result16 = product << 1;
+    state.r[0] = (uint8_t)(result16 & 0xFF);
+    state.r[1] = (uint8_t)(result16 >> 8);
+    bool c = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    state.sreg = (state.sreg & 0xFC) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */ 
 void executeFMULS(AvrState& state, OpsRdRrMpy ops) {
-
+    int8_t rd = (int8_t)state.r[ops.d];
+    int8_t rr = (int8_t)state.r[ops.r];
+    int16_t product = (int16_t)rd * (int16_t)rr;
+    uint16_t result16 = (uint16_t)(product << 1);
+    state.r[0] = (uint8_t)(result16 & 0xFF);
+    state.r[1] = (uint8_t)(result16 >> 8);
+    bool c = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    state.sreg = (state.sreg & 0xFC) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */ 
 void executeFMULSU(AvrState& state, OpsRdRrMpy ops) {
-
+    int8_t  rd = (int8_t)state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    int16_t product = (int16_t)rd * (int16_t)((uint16_t)rr);
+    uint16_t result16 = (uint16_t)(product << 1);
+    state.r[0] = (uint8_t)(result16 & 0xFF);
+    state.r[1] = (uint8_t)(result16 >> 8);
+    bool c = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    state.sreg = (state.sreg & 0xFC) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */ 
 void executeNEG(AvrState& state, OpsRd ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t result8 = (uint8_t)(-(int8_t)rd);
+    bool h = ((result8 & 0x08) != 0) || ((rd & 0x08) != 0);
+    bool v = rd == 0x80;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result8 != 0x00;
+    bool s = n ^ v;
 
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeSBIW(AvrState& state, OpsRd06K6 ops) {
+    uint8_t  lo = state.r[ops.d];
+    uint8_t  hi = state.r[ops.d + 1];
+    uint16_t word = ((uint16_t)hi << 8) | lo;
+    uint16_t result16 = word - ops.k;
 
+    bool v = (hi & 0x80) && (result16 & 0x8000);
+    bool n = (result16 & 0x8000) != 0;
+    bool z = result16 == 0;
+    bool c = (result16 & 0x8000) && (hi & 0x80);
+    bool s = n ^ v;
+
+    state.r[ops.d]     = (uint8_t)(result16 & 0xFF);
+    state.r[ops.d + 1] = (uint8_t)(result16 >> 8);
+    state.sreg = (state.sreg & 0xE0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */ 
 void executeSBC(AvrState& state, OpsRdRr ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    uint8_t ci = (state.sreg >> SREG_C) & 1;
+    uint16_t result16 = (uint16_t)rd - (uint16_t)rr - ci;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = ((rd & 0x0F) < ((rr & 0x0F) + ci));
+    bool v = ((rd ^ rr) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeSBCI(AvrState& state, OpsRdK8 ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t ci = (state.sreg >> SREG_C) & 1;
+    uint16_t result16 = (uint16_t)rd - (uint16_t)ops.k - ci;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = ((rd & 0x0F) < ((ops.k & 0x0F) + ci));
+    bool v = ((rd ^ ops.k) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeSUB(AvrState& state, OpsRdRr ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    uint16_t result16 = (uint16_t)rd - (uint16_t)rr;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = (rd & 0x0F) < (rr & 0x0F);
+    bool v = ((rd ^ rr) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeSUBI(AvrState& state, OpsRdK8 ops) {
+    uint8_t rd = state.r[ops.d];
+    uint16_t result16 = (uint16_t)rd - (uint16_t)ops.k;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = (rd & 0x0F) < (ops.k & 0x0F);
+    bool v = ((rd ^ ops.k) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
+// ===========================================================================
+// Logic instructions
+// ===========================================================================
+
 void executeAND(AvrState& state, OpsRdRr ops) {
-
+    uint8_t result8 = state.r[ops.d] & state.r[ops.r];
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    // V=0, S=N xor V = N
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE4) | (n << SREG_S) | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */ 
 void executeANDI(AvrState& state, OpsRdK8 ops) {
-
+    uint8_t result8 = state.r[ops.d] & ops.k;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE4) | (n << SREG_S) | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */ 
 void executeCOM(AvrState& state, OpsRd ops) {
-
+    uint8_t result8 = 0xFF - state.r[ops.d];
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    state.r[ops.d] = result8;
+    // V=0, C=1, S=N
+    state.sreg = (state.sreg & 0xE0) | (n << SREG_S) | (n << SREG_N)
+               | (z << SREG_Z) | (1 << SREG_C);
 }
 
-/*
- *
- */ 
 void executeEOR(AvrState& state, OpsRdRr ops) {
-
+    uint8_t result8 = state.r[ops.d] ^ state.r[ops.r];
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE4) | (n << SREG_S) | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */ 
 void executeOR(AvrState& state, OpsRdRr ops) {
-
+    uint8_t result8 = state.r[ops.d] | state.r[ops.r];
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE4) | (n << SREG_S) | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */ 
 void executeORI(AvrState& state, OpsRdK8 ops) {
-
+    uint8_t result8 = state.r[ops.d] | ops.k;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE4) | (n << SREG_S) | (n << SREG_N) | (z << SREG_Z);
 }
 
-/*
- *
- */ 
 void executeSER(AvrState& state, OpsRdK8 ops) {
-
+    state.r[ops.d] = 0xFF;
+    // No SREG flags affected (consistent with LDI behavior)
 }
 
-/*
- *
- */ 
 void executeSWAP(AvrState& state, OpsRd ops) {
-
+    uint8_t rd = state.r[ops.d];
+    state.r[ops.d] = (rd << 4) | (rd >> 4);
+    // No SREG flags affected
 }
 
-/*
- *
- */ 
+// ===========================================================================
+// Shift / Rotate instructions
+// ===========================================================================
+
 void executeLSR(AvrState& state, OpsRd ops) {
+    uint8_t rd = state.r[ops.d];
+    bool c = rd & 0x01;
+    uint8_t result8 = rd >> 1;
+    bool n = false;
+    bool z = result8 == 0;
+    bool v = n ^ c;
+    bool s = n ^ v;
 
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE0) | (s << SREG_S) | (v << SREG_V)
+               | (z << SREG_Z) | (c << SREG_C);
 }
 
-/*
- *
- */ 
 void executeROR(AvrState& state, OpsRd ops) {
+    uint8_t rd = state.r[ops.d];
+    bool oldC = (state.sreg >> SREG_C) & 1;
+    bool newC = rd & 0x01;
+    uint8_t result8 = (rd >> 1) | (oldC ? 0x80 : 0x00);
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool v = n ^ newC;
+    bool s = n ^ v;
 
+    state.r[ops.d] = result8;
+    state.sreg = (state.sreg & 0xE0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (newC << SREG_C);
 }
 
-/*
- *
- */ 
+// ===========================================================================
+// Compare instructions
+// ===========================================================================
+
 void executeCP(AvrState& state, OpsRdRr ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    uint16_t result16 = (uint16_t)rd - (uint16_t)rr;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = (rd & 0x0F) < (rr & 0x0F);
+    bool v = ((rd ^ rr) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeCPC(AvrState& state, OpsRdRr ops) {
+    uint8_t rd = state.r[ops.d];
+    uint8_t rr = state.r[ops.r];
+    uint8_t ci = (state.sreg >> SREG_C) & 1;
+    uint16_t result16 = (uint16_t)rd - (uint16_t)rr - ci;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = ((rd & 0x0F) < ((rr & 0x0F) + ci));
+    bool v = ((rd ^ rr) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    // Z: previous value preserved if result is zero; cleared otherwise
+    bool prevZ = (state.sreg >> SREG_Z) & 1;
+    bool z = (result8 == 0) ? prevZ : false;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeCPI(AvrState& state, OpsRdK8 ops) {
+    uint8_t rd = state.r[ops.d];
+    uint16_t result16 = (uint16_t)rd - (uint16_t)ops.k;
+    uint8_t result8 = (uint8_t)result16;
 
+    bool h = (rd & 0x0F) < (ops.k & 0x0F);
+    bool v = ((rd ^ ops.k) & (rd ^ result8) & 0x80) != 0;
+    bool n = (result8 & 0x80) != 0;
+    bool z = result8 == 0;
+    bool c = result16 > 0xFF;
+    bool s = n ^ v;
+
+    state.sreg = (state.sreg & 0xC0) | (s << SREG_S) | (v << SREG_V)
+               | (n << SREG_N) | (z << SREG_Z) | (c << SREG_C) | (h << SREG_H);
 }
 
-/*
- *
- */ 
 void executeCPSE(AvrState& state, OpsRdRr ops) {
-
+    if (state.r[ops.d] == state.r[ops.r]) {
+        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+        Opcode nextOp = decodeInstruction(nextInstr);
+        state.pc += nextOp.words * 2;
+    }
 }
 
-/*
- *
- */ 
+// ===========================================================================
+// Data Transfer instructions
+// ===========================================================================
+
 void executeMOV(AvrState& state, OpsRdRr ops) {
-
+    state.r[ops.d] = state.r[ops.r];
 }
 
-/*
- *
- */ 
 void executeMOVW(AvrState& state, OpsRd06Rr06 ops) {
-
+    uint8_t d = ops.d * 2;
+    uint8_t r = ops.r * 2;
+    state.r[d]     = state.r[r];
+    state.r[d + 1] = state.r[r + 1];
 }
 
-/*
- *
- */ 
 void executeLDI(AvrState& state, OpsRdK8 ops) {
-
+    state.r[ops.d] = ops.k;
 }
 
-/*
- *
- */ 
 void executeLD_X(AvrState& state, OpsLdSt ops) {
+    uint16_t X = readRegWord(state, 26);
 
+    if (ops.mode == 2) {  // Pre-decrement: LD Rd, -X
+        X--;
+        writeRegWord(state, 26, X);
+    }
+
+    state.r[ops.d] = readDataByte(state, X);
+
+    if (ops.mode == 1) {  // Post-increment: LD Rd, X+
+        X++;
+        writeRegWord(state, 26, X);
+    }
 }
 
-/*
- *
- */ 
 void executeLD_Y(AvrState& state, OpsLdSt ops) {
+    uint16_t Y = readRegWord(state, 28);
 
+    if (ops.mode == 2) {  // Pre-decrement
+        Y--;
+        writeRegWord(state, 28, Y);
+    }
+
+    state.r[ops.d] = readDataByte(state, Y);
+
+    if (ops.mode == 1) {  // Post-increment
+        Y++;
+        writeRegWord(state, 28, Y);
+    }
 }
 
-/*
- *
- */ 
 void executeLDD_Y(AvrState& state, OpsLdd ops) {
-
+    uint16_t Y = readRegWord(state, 28);
+    state.r[ops.d] = readDataByte(state, Y + ops.q);
 }
 
-/*
- *
- */ 
 void executeLD_Z(AvrState& state, OpsLdSt ops) {
+    uint16_t Z = readRegWord(state, 30);
 
+    if (ops.mode == 2) {  // Pre-decrement
+        Z--;
+        writeRegWord(state, 30, Z);
+    }
+
+    state.r[ops.d] = readDataByte(state, Z);
+
+    if (ops.mode == 1) {  // Post-increment
+        Z++;
+        writeRegWord(state, 30, Z);
+    }
 }
 
-/*
- *
- */ 
 void executeLDD_Z(AvrState& state, OpsLdd ops) {
-
+    uint16_t Z = readRegWord(state, 30);
+    state.r[ops.d] = readDataByte(state, Z + ops.q);
 }
 
-/*
- *
- */ 
 void executeLDS(AvrState& state, OpsLdsSts ops) {
-
+    state.r[ops.d] = readDataByte(state, ops.addr);
 }
 
-/*
- *
- */ 
 void executeLPM(AvrState& state, OpsRd ops, uint8_t mode) {
-
+    uint16_t Z = readRegWord(state, 30);
+    state.r[ops.d] = state.flash[Z];
+    if (mode == 1) {
+        Z++;
+        writeRegWord(state, 30, Z);
+    }
 }
 
-/*
- *
- */ 
 void executeIN(AvrState& state, OpsRdIO ops) {
-
+    state.r[ops.d] = readDataByte(state, ops.a + 0x20);
 }
 
-/*
- *
- */ 
 void executeOUT(AvrState& state, OpsIORr ops) {
-
+    writeDataByte(state, ops.a + 0x20, state.r[ops.r]);
 }
 
-/*
- *
- */ 
 void executePOP(AvrState& state, OpsRd ops) {
-
+    state.r[ops.d] = popByte(state);
 }
 
-/*
- *
- */ 
 void executePUSH(AvrState& state, OpsRd ops) {
-
+    pushByte(state, state.r[ops.d]);
 }
 
-/*
- *
- */ 
 void executeST_X(AvrState& state, OpsLdSt ops) {
+    uint16_t X = readRegWord(state, 26);
 
+    if (ops.mode == 2) {  // ST -X, Rr
+        X--;
+        writeRegWord(state, 26, X);
+    }
+
+    writeDataByte(state, X, state.r[ops.d]);
+
+    if (ops.mode == 1) {  // ST X+, Rr
+        X++;
+        writeRegWord(state, 26, X);
+    }
 }
 
-/*
- *
- */ 
 void executeST_Y(AvrState& state, OpsLdSt ops) {
+    uint16_t Y = readRegWord(state, 28);
 
+    if (ops.mode == 2) {
+        Y--;
+        writeRegWord(state, 28, Y);
+    }
+
+    writeDataByte(state, Y, state.r[ops.d]);
+
+    if (ops.mode == 1) {
+        Y++;
+        writeRegWord(state, 28, Y);
+    }
 }
 
-/*
- *
- */ 
 void executeSTD_Y(AvrState& state, OpsLdd ops) {
-
+    uint16_t Y = readRegWord(state, 28);
+    writeDataByte(state, Y + ops.q, state.r[ops.d]);
 }
 
-/*
- *
- */ 
 void executeST_Z(AvrState& state, OpsLdSt ops) {
+    uint16_t Z = readRegWord(state, 30);
 
+    if (ops.mode == 2) {
+        Z--;
+        writeRegWord(state, 30, Z);
+    }
+
+    writeDataByte(state, Z, state.r[ops.d]);
+
+    if (ops.mode == 1) {
+        Z++;
+        writeRegWord(state, 30, Z);
+    }
 }
 
-/*
- *
- */ 
 void executeSTD_Z(AvrState& state, OpsLdd ops) {
-
+    uint16_t Z = readRegWord(state, 30);
+    writeDataByte(state, Z + ops.q, state.r[ops.d]);
 }
 
-/*
- *
- */ 
 void executeSTS(AvrState& state, OpsLdsSts ops) {
-
+    writeDataByte(state, ops.addr, state.r[ops.d]);
 }
 
-/*
- *
- */ 
+// ===========================================================================
+// Branch / Jump / Call instructions
+// ===========================================================================
+
 void executeBRBC(AvrState& state, OpsK7 ops) {
-
+    if (!((state.sreg >> ops.s) & 1)) {
+        state.pc += ops.k;  // k is already sign-extended by decoder; PC is past instruction
+    }
 }
 
-/*
- *
- */ 
 void executeBRBS(AvrState& state, OpsK7 ops) {
-
+    if ((state.sreg >> ops.s) & 1) {
+        state.pc += ops.k;
+    }
 }
 
-/*
- *
- */ 
 void executeRJMP(AvrState& state, OpsK02 ops) {
-
+    state.pc += ops.k;  // k already sign-extended 12-bit
 }
 
-/*
- *
- */ 
 void executeJMP(AvrState& state, OpsK22 ops) {
-
+    state.pc = (uint16_t)(ops.k * 2);  // k in words, PC in bytes
 }
 
-/*
- *
- */ 
 void executeIJMP(AvrState& state) {
-
+    state.pc = readRegWord(state, 30);
 }
 
-/*
- *
- */ 
 void executeRCALL(AvrState& state, OpsK02 ops) {
-
+    pushWord(state, state.pc);
+    state.pc += ops.k;
 }
 
-/*
- *
- */ 
 void executeCALL(AvrState& state, OpsK22 ops) {
-
+    pushWord(state, state.pc);
+    state.pc = (uint16_t)(ops.k * 2);
 }
 
-/*
- *
- */ 
 void executeICALL(AvrState& state) {
-
+    pushWord(state, state.pc);
+    state.pc = readRegWord(state, 30);
 }
 
-/*
- *
- */ 
 void executeRET(AvrState& state) {
-
+    state.pc = popWord(state);
 }
 
-/*
- *
- */ 
 void executeRETI(AvrState& state) {
-
+    state.pc = popWord(state);
+    setFlag(state, SregBit::I);
 }
 
-/*
- *
- */ 
+// ===========================================================================
+// Skip instructions
+// ===========================================================================
+
 void executeSBIC(AvrState& state, OpsIOB ops) {
-
+    if (!getIOBit(state, ops.a, ops.b)) {
+        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+        Opcode nextOp = decodeInstruction(nextInstr);
+        state.pc += nextOp.words * 2;
+    }
 }
 
-/*
- *
- */ 
 void executeSBIS(AvrState& state, OpsIOB ops) {
-
+    if (getIOBit(state, ops.a, ops.b)) {
+        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+        Opcode nextOp = decodeInstruction(nextInstr);
+        state.pc += nextOp.words * 2;
+    }
 }
 
-/*
- *
- */ 
 void executeSBRC(AvrState& state, OpsRrB ops) {
-
+    if (!((state.r[ops.r] >> ops.b) & 1)) {
+        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+        Opcode nextOp = decodeInstruction(nextInstr);
+        state.pc += nextOp.words * 2;
+    }
 }
 
-/*
- *
- */ 
 void executeSBRS(AvrState& state, OpsRrB ops) {
-
+    if ((state.r[ops.r] >> ops.b) & 1) {
+        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+        Opcode nextOp = decodeInstruction(nextInstr);
+        state.pc += nextOp.words * 2;
+    }
 }
 
+// ===========================================================================
+// Bit manipulation instructions
+// ===========================================================================
 
-/*
- *
- */ 
 void executeBSET(AvrState& state, OpsBOnly ops) {
-
+    setFlag(state, static_cast<SregBit>(ops.b));
 }
 
-/*
- *
- */ 
 void executeBCLR(AvrState& state, OpsBOnly ops) {
-
+    clearFlag(state, static_cast<SregBit>(ops.b));
 }
 
-/*
- *
- */ 
 void executeBLD(AvrState& state, OpsRdB ops) {
-
+    if (getFlag(state, SregBit::T))
+        state.r[ops.d] |= (1 << ops.b);
+    else
+        state.r[ops.d] &= ~(1 << ops.b);
 }
 
-/*
- *
- */ 
 void executeBST(AvrState& state, OpsRdB ops) {
-
+    if ((state.r[ops.d] >> ops.b) & 1)
+        setFlag(state, SregBit::T);
+    else
+        clearFlag(state, SregBit::T);
 }
 
-/*
- *
- */ 
 void executeCBI(AvrState& state, OpsIOB ops) {
-
+    clearIOBit(state, ops.a, ops.b);
 }
 
-void executeSBI(AvrState& state, OpsIOB ops);
+void executeSBI(AvrState& state, OpsIOB ops) {
+    setIOBit(state, ops.a, ops.b);
+}
 
-/*
- *
- */ 
+// ===========================================================================
+// MCU control instructions
+// ===========================================================================
+
 void executeNOP(AvrState& state) {
-
+    (void)state;  // No operation
 }
 
-/*
- *
- */ 
 void executeSLEEP(AvrState& state) {
-
+    (void)state;  // For emulator: treat as NOP (full peripheral integration out of scope)
 }
 
-/*
- *
- */ 
 void executeWDR(AvrState& state) {
-
+    (void)state;  // Reset watchdog timer — for emulator, treat as NOP
 }
 
-/*
- *
- */ 
 void executeBREAK(AvrState& state) {
-
+    (void)state;  // Without debug system enabled: acts as NOP
 }
 
-/*
- *
- */ 
 void executeSPM(AvrState& state) {
-
+    uint16_t Z = readRegWord(state, 30);
+    if (Z + 1 >= AVR_FLASH_SIZE) return;
+    state.flash[Z]     = state.r[0];
+    state.flash[Z + 1] = state.r[1];
+    // Note: Full SPM with SPMCSR and page buffer is deferred for bootloader support.
+    // This minimal implementation writes R1:R0 directly to flash at Z.
 }
-
