@@ -24,8 +24,9 @@ bool executeProgram(AvrState& state) {
       state.pc += 2;
     }
 
-    if (!executeInstruction(state, op, instruction, extra))
+    if (!executeInstruction(state, op, instruction, extra)) {
       return false;
+    }
   }
   return true;
 }
@@ -207,3 +208,539 @@ bool executeInstruction(AvrState& state, Opcode& op, uint16_t instr, uint16_t se
   }
   return true;
 }
+
+/*
+ *
+ */
+void executeADC(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */
+void executeADD(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */
+void executeADIW(AvrState& state, OpsRd06K6 ops) {
+
+}
+
+/*
+ *
+ */
+void executeASR(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */
+void executeDEC(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */
+void executeINC(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */
+void executeMUL(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */
+void executeMULS(AvrState& state, OpsRd06Rr06 ops) {
+
+}
+
+/*
+ *
+ */
+void executeMULSU(AvrState& state, OpsRdRrMpy ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeFMUL(AvrState& state, OpsRdRrMpy ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeFMULS(AvrState& state, OpsRdRrMpy ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeFMULSU(AvrState& state, OpsRdRrMpy ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeNEG(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBIW(AvrState& state, OpsRd06K6 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBC(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBCI(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSUB(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSUBI(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeAND(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeANDI(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCOM(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeEOR(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeOR(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeORI(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSER(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSWAP(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLSR(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeROR(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCP(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCPC(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCPI(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCPSE(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeMOV(AvrState& state, OpsRdRr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeMOVW(AvrState& state, OpsRd06Rr06 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLDI(AvrState& state, OpsRdK8 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLD_X(AvrState& state, OpsLdSt ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLD_Y(AvrState& state, OpsLdSt ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLDD_Y(AvrState& state, OpsLdd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLD_Z(AvrState& state, OpsLdSt ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLDD_Z(AvrState& state, OpsLdd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLDS(AvrState& state, OpsLdsSts ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeLPM(AvrState& state, OpsRd ops, uint8_t mode) {
+
+}
+
+/*
+ *
+ */ 
+void executeIN(AvrState& state, OpsRdIO ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeOUT(AvrState& state, OpsIORr ops) {
+
+}
+
+/*
+ *
+ */ 
+void executePOP(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executePUSH(AvrState& state, OpsRd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeST_X(AvrState& state, OpsLdSt ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeST_Y(AvrState& state, OpsLdSt ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSTD_Y(AvrState& state, OpsLdd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeST_Z(AvrState& state, OpsLdSt ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSTD_Z(AvrState& state, OpsLdd ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSTS(AvrState& state, OpsLdsSts ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeBRBC(AvrState& state, OpsK7 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeBRBS(AvrState& state, OpsK7 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeRJMP(AvrState& state, OpsK02 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeJMP(AvrState& state, OpsK22 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeIJMP(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeRCALL(AvrState& state, OpsK02 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCALL(AvrState& state, OpsK22 ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeICALL(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeRET(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeRETI(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBIC(AvrState& state, OpsIOB ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBIS(AvrState& state, OpsIOB ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBRC(AvrState& state, OpsRrB ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeSBRS(AvrState& state, OpsRrB ops) {
+
+}
+
+
+/*
+ *
+ */ 
+void executeBSET(AvrState& state, OpsBOnly ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeBCLR(AvrState& state, OpsBOnly ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeBLD(AvrState& state, OpsRdB ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeBST(AvrState& state, OpsRdB ops) {
+
+}
+
+/*
+ *
+ */ 
+void executeCBI(AvrState& state, OpsIOB ops) {
+
+}
+
+void executeSBI(AvrState& state, OpsIOB ops);
+
+/*
+ *
+ */ 
+void executeNOP(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeSLEEP(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeWDR(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeBREAK(AvrState& state) {
+
+}
+
+/*
+ *
+ */ 
+void executeSPM(AvrState& state) {
+
+}
+
