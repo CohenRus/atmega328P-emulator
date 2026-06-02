@@ -1,4 +1,40 @@
 #include "memory.h"
+#include "error.h"
+
+namespace {
+
+constexpr uint16_t DATA_SPACE_END = 0x08FF;
+constexpr uint16_t STACK_BOTTOM   = 0x0100;
+
+bool g_memoryFault = false;
+
+void faultDataAddr(uint16_t addr, const char* access) {
+  g_memoryFault = true;
+  emuErrorPcAddr(emuFaultPc(), addr, access, "invalid data-space access");
+}
+
+void faultStack(const char* detail) {
+  g_memoryFault = true;
+  emuErrorPc(emuFaultPc(), detail);
+}
+
+bool dataAddrOk(uint16_t addr) {
+  return addr <= DATA_SPACE_END;
+}
+
+}  // namespace
+
+bool memoryFaultPending() {
+  return g_memoryFault;
+}
+
+void memoryClearFault() {
+  g_memoryFault = false;
+}
+
+void memorySignalFault() {
+  g_memoryFault = true;
+}
 
 // ===========================================================================
 // SREG Flags
@@ -64,6 +100,10 @@ uint8_t readDataByte(const AvrState& state, uint16_t addr) {
     }
 
     // I/O, extended I/O, and SRAM — all in sram[] indexed by data-space addr
+    if (!dataAddrOk(addr)) {
+      faultDataAddr(addr, "read");
+      return 0;
+    }
     return state.sram[addr];
 }
 
@@ -95,6 +135,10 @@ void writeDataByte(AvrState& state, uint16_t addr, uint8_t value) {
     }
 
     // I/O, extended I/O, and SRAM
+    if (!dataAddrOk(addr)) {
+      faultDataAddr(addr, "write");
+      return;
+    }
     state.sram[addr] = value;
 }
 
@@ -121,11 +165,19 @@ void clearIOBit(AvrState& state, uint8_t ioAddr, uint8_t bit) {
 // ===========================================================================
 
 void pushByte(AvrState& state, uint8_t value) {
+    if (state.sp <= STACK_BOTTOM) {
+      faultStack("stack overflow (SP would drop below 0x0100)");
+      return;
+    }
     state.sp--;
     writeDataByte(state, state.sp, value);
 }
 
 uint8_t popByte(AvrState& state) {
+    if (state.sp > DATA_SPACE_END) {
+      faultStack("stack underflow (SP above RAMEND 0x08FF)");
+      return 0;
+    }
     uint8_t value = readDataByte(state, state.sp);
     state.sp++;
     return value;

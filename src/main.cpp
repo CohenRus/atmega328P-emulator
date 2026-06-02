@@ -3,61 +3,65 @@
 #include "loader.h"
 #include "state.h"
 #include "executor.h"
+#include "error.h"
+// ftxui includes
+#include "ftxui/component/app.hpp"             // for App
+#include "ftxui/component/captured_mouse.hpp"  // for ftxui
+#include "ftxui/component/component.hpp"  // for Button, Horizontal, Renderer
+#include "ftxui/component/component_base.hpp"  // for ComponentBase
+#include "ftxui/dom/elements.hpp"
 
 void usage();
-bool validateFile(char* fileName);
+bool validateFile(const char* fileName);
 
 int main(int argc, char** argv) {
-  // instantiate global state
-  AvrState state; 
+  using namespace ftxui;
+  AvrState state;
 
-  // check args
-  if (argc != 2) {
-    usage();
-    return 1;
-  }
+  // if (argc != 2) {
+  //   usage();
+  //   return 1;
+  // }
 
-  // check file
-  if (!validateFile(argv[1])) {
-    std::cout << "invalid file" << std::endl;
-    return 1;
-  }
+  // if (!validateFile(argv[1])) {
+  //   emuErrorFile(argv[1], "not a readable ELF file (expected 0x7F 'E' 'L' 'F' magic)");
+  //   return 1;
+  // }
+  //
+  // if (!loadFirmware(state, argv[1])) {
+  //   return 2;
+  // }
 
+  // if (!executeProgram(state)) {
+  //   return 3;
+  // }
 
-  // load elf file
-  if (!loadFirmware(state, argv[1])) {
-    std::cout << "failed to load elf file" << std::endl;
-    return 2;
-  }
-  std::cout << "loaded elf file successfully" << std::endl;
+  // Modify the way to render them on screen:
+  auto component = Renderer([&] {
+      return vbox({
+          text(""),
+      }) |
+      flex | border;
+  });
 
-  if (!executeProgram(state)) {
-    std::cerr << "emulation halted with error" << std::endl;
-    return 3;
-  }
+  auto screen = App::Fullscreen();
+  screen.Loop(component);
   return 0;
 }
 
 void usage() {
-  std::cout << "wrong params chud" << std::endl;
-  std::cout << "cli <firmware.elf>" << std::endl;
+  std::cerr << "usage: emulator <firmware.elf>\n";
 }
 
-bool validateFile(char* fileName) {
-  // check for file existing
+bool validateFile(const char* fileName) {
   std::ifstream file(fileName, std::ios::binary);
   if (!file.is_open()) {
-    file.close();
     return false;
   }
 
-  // check magic bytes to verify elf file
-  // Byte 0: 0x7f
-  // Byte 1: 0x45 (ASCII 'E')
-  // Byte 2: 0x4c (ASCII 'L')
-  // Byte 3: 0x46 (ASCII 'F')  
   char mb[4];
-  file.read(mb, 4);
-  file.close();
+  if (!file.read(mb, 4)) {
+    return false;
+  }
   return (mb[0] == 0x7f && mb[1] == 'E' && mb[2] == 'L' && mb[3] == 'F');
 }

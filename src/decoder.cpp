@@ -1,14 +1,14 @@
 #include "decoder.h"
-#include <stdexcept>
 
-Opcode decodeInstruction(uint16_t& instruction) {
-  for (Opcode opcode : OPCODE_TABLE) {
+bool decodeInstruction(uint16_t instruction, Opcode& out) {
+  for (const Opcode& opcode : OPCODE_TABLE) {
     uint16_t op = instruction & opcode.mask;
     if (op == opcode.code) {
-      return opcode;
+      out = opcode;
+      return true;
     }
   }
-  throw std::runtime_error("unknown opcode");
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ OpsIORr decodeIORr(uint16_t instr) {
     return {a, r};
 }
 
-// k7:  xxxx xxkk kkkk ksss  (7-bit signed offset, 3-bit SREG bit)
+// k7:  xxxx xxkk kkkk ksss  (7-bit signed word offset, 3-bit SREG bit)
 OpsK7 decodeK7(uint16_t instr) {
     uint8_t raw = (instr >> 3) & 0x7F;
     // sign-extend bit 6 into a signed byte
@@ -98,7 +98,7 @@ OpsK7 decodeK7(uint16_t instr) {
     return {k, s};
 }
 
-// k02:  xxxx kkkk kkkk kkkk  (12-bit signed — RJMP / RCALL)
+// k02:  xxxx kkkk kkkk kkkk  (12-bit signed word offset — RJMP / RCALL)
 OpsK02 decodeK02(uint16_t instr) {
     uint16_t raw = instr & 0x0FFF;
     int16_t k = (raw & 0x0800) ? (int16_t)(raw | 0xF000) : (int16_t)raw;

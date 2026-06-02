@@ -221,19 +221,25 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xF000, 0xE000, AvrOp::LDI,    AvrFmt::Rd_K8,     1, 1, "LDI"    },  // 1110 KKKK dddd KKKK
  
     // LD X: (i) ..1100  (ii) ..1101  (iii) ..1110  — mask covers all three
+    { 0xFE0F, 0x900F, AvrOp::POP,    AvrFmt::Rd_only,   1, 2, "POP"    },  // 1001 000d dddd 1111
+
     { 0xFE0C, 0x900C, AvrOp::LD_X,   AvrFmt::LD_family, 1, 2, "LD X"   },  // 1001 000d dddd 11xx
  
-    // LD Y: (i) 1000..1000  — mask for base; (ii)..1001 (iii)..1010 (iv)LDD q handled by decoder
+    // LDD Y+q — more specific than LD Y (base) when q=0
+    { 0xD208, 0x8008, AvrOp::LD_Y,   AvrFmt::LDD_family,1, 2, "LDD Y+q"},  // 10q0 qq0d dddd 1qqq
+
+    // LD Y: (i) 1000..1000  (ii)..1001 (iii)..1010
     { 0xFE0F, 0x8008, AvrOp::LD_Y,   AvrFmt::LD_family, 1, 2, "LD Y"   },  // 1000 000d dddd 1000
     { 0xFE0F, 0x9009, AvrOp::LD_Y,   AvrFmt::LD_family, 1, 2, "LD Y+"  },  // 1001 000d dddd 1001
     { 0xFE0F, 0x900A, AvrOp::LD_Y,   AvrFmt::LD_family, 1, 2, "LD -Y"  },  // 1001 000d dddd 1010
-    { 0xD208, 0x8008, AvrOp::LD_Y,   AvrFmt::LDD_family,1, 2, "LDD Y+q"},  // 10q0 qq0d dddd 1qqq
  
-    // LD Z: (i) 1000..0000  (ii)..0001 (iii)..0010 (iv)LDD q
+    // LDD Z+q — more specific than LD Z (base) when q=0
+    { 0xD208, 0x8000, AvrOp::LD_Z,   AvrFmt::LDD_family,1, 2, "LDD Z+q"},  // 10q0 qq0d dddd 0qqq
+
+    // LD Z: (i) 1000..0000  (ii)..0001 (iii)..0010
     { 0xFE0F, 0x8000, AvrOp::LD_Z,   AvrFmt::LD_family, 1, 2, "LD Z"   },  // 1000 000d dddd 0000
     { 0xFE0F, 0x9001, AvrOp::LD_Z,   AvrFmt::LD_family, 1, 2, "LD Z+"  },  // 1001 000d dddd 0001
     { 0xFE0F, 0x9002, AvrOp::LD_Z,   AvrFmt::LD_family, 1, 2, "LD -Z"  },  // 1001 000d dddd 0010
-    { 0xD208, 0x8000, AvrOp::LD_Z,   AvrFmt::LDD_family,1, 2, "LDD Z+q"},  // 10q0 qq0d dddd 0qqq
  
     // LDS 32-bit (AVRe/AVRxm/AVRxt)
     { 0xFE0F, 0x9000, AvrOp::LDS,    AvrFmt::LDS_STS,   2, 2, "LDS"    },  // 1001 000d dddd 0000 + k16
@@ -245,23 +251,26 @@ static const Opcode OPCODE_TABLE[] = {
  
     { 0xF800, 0xB000, AvrOp::IN,     AvrFmt::Rd_IO,     1, 1, "IN"     },  // 1011 0AAd dddd AAAA
     { 0xF800, 0xB800, AvrOp::OUT,    AvrFmt::IO_Rr,     1, 1, "OUT"    },  // 1011 1AAr rrrr AAAA
-    { 0xFE0F, 0x900F, AvrOp::POP,    AvrFmt::Rd_only,   1, 2, "POP"    },  // 1001 000d dddd 1111
     { 0xFE0F, 0x920F, AvrOp::PUSH,   AvrFmt::Rd_only,   1, 2, "PUSH"   },  // 1001 001d dddd 1111
  
     // ST X: (i) ..1100  (ii) ..1101  (iii) ..1110
     { 0xFE0C, 0x920C, AvrOp::ST_X,   AvrFmt::LD_family, 1, 2, "ST X"   },  // 1001 001r rrrr 11xx
  
-    // ST Y: (i) 1000..1000  (ii)..1001 (iii)..1010 (iv)STD q
+    // STD Y+q — more specific than ST Y (base) when q=0
+    { 0xD208, 0x8208, AvrOp::ST_Y,   AvrFmt::LDD_family,1, 2, "STD Y+q"},  // 10q0 qq1r rrrr 1qqq
+
+    // ST Y: (i) 1000..1000  (ii)..1001 (iii)..1010
     { 0xFE0F, 0x8208, AvrOp::ST_Y,   AvrFmt::LD_family, 1, 2, "ST Y"   },  // 1000 001r rrrr 1000
     { 0xFE0F, 0x9209, AvrOp::ST_Y,   AvrFmt::LD_family, 1, 2, "ST Y+"  },  // 1001 001r rrrr 1001
     { 0xFE0F, 0x920A, AvrOp::ST_Y,   AvrFmt::LD_family, 1, 2, "ST -Y"  },  // 1001 001r rrrr 1010
-    { 0xD208, 0x8208, AvrOp::ST_Y,   AvrFmt::LDD_family,1, 2, "STD Y+q"},  // 10q0 qq1r rrrr 1qqq
- 
-    // ST Z: (i) 1000..0000  (ii)..0001 (iii)..0010 (iv)STD q
+
+    // STD Z+q — more specific than ST Z (base) when q=0
+    { 0xD208, 0x8200, AvrOp::ST_Z,   AvrFmt::LDD_family,1, 2, "STD Z+q"},  // 10q0 qq1r rrrr 0qqq
+
+    // ST Z: (i) 1000..0000  (ii)..0001 (iii)..0010
     { 0xFE0F, 0x8200, AvrOp::ST_Z,   AvrFmt::LD_family, 1, 2, "ST Z"   },  // 1000 001r rrrr 0000
     { 0xFE0F, 0x9201, AvrOp::ST_Z,   AvrFmt::LD_family, 1, 2, "ST Z+"  },  // 1001 001r rrrr 0001
     { 0xFE0F, 0x9202, AvrOp::ST_Z,   AvrFmt::LD_family, 1, 2, "ST -Z"  },  // 1001 001r rrrr 0010
-    { 0xD208, 0x8200, AvrOp::ST_Z,   AvrFmt::LDD_family,1, 2, "STD Z+q"},  // 10q0 qq1r rrrr 0qqq
  
     // STS 32-bit (AVRe/AVRxm/AVRxt)
     { 0xFE0F, 0x9200, AvrOp::STS,    AvrFmt::LDS_STS,   2, 2, "STS"    },  // 1001 001d dddd 0000 + k16
@@ -309,16 +318,7 @@ static const Opcode OPCODE_TABLE[] = {
     // -----------------------------------------------------------------------
     // Bit manipulation
     // -----------------------------------------------------------------------
-    { 0xFF8F, 0x9408, AvrOp::BSET,   AvrFmt::b_only,    1, 1, "BSET"   },  // 1001 0100 0sss 1000
-    { 0xFF8F, 0x9488, AvrOp::BCLR,   AvrFmt::b_only,    1, 1, "BCLR"   },  // 1001 0100 1sss 1000
-    { 0xFE08, 0xF800, AvrOp::BLD,    AvrFmt::Rd_b,      1, 1, "BLD"    },  // 1111 100d dddd 0bbb
-    { 0xFE08, 0xFA00, AvrOp::BST,    AvrFmt::Rd_b,      1, 1, "BST"    },  // 1111 101d dddd 0bbb
-    { 0xFF00, 0x9800, AvrOp::CBI,    AvrFmt::IO_b,      1, 2, "CBI"    },  // 1001 1000 AAAA Abbb
-    { 0xFF00, 0x9A00, AvrOp::SBI,    AvrFmt::IO_b,      1, 2, "SBI"    },  // 1001 1010 AAAA Abbb
- 
     // SREG flag set/clear aliases (all encoded as BSET/BCLR with fixed sss)
-    { 0xFFFF, 0x9408, AvrOp::BSET,   AvrFmt::NONE,      1, 1, "SEC"    },  // sss=000  (SEC = BSET 0)
-    { 0xFFFF, 0x9428, AvrOp::BSET,   AvrFmt::NONE,      1, 1, "SEN"    },  // sss=010  (SEN = BSET 2)  -- kept as named ops below
     { 0xFFFF, 0x9408, AvrOp::SEC,    AvrFmt::NONE,      1, 1, "SEC"    },  // 1001 0100 0000 1000
     { 0xFFFF, 0x9418, AvrOp::SEZ,    AvrFmt::NONE,      1, 1, "SEZ"    },  // 1001 0100 0001 1000
     { 0xFFFF, 0x9428, AvrOp::SEN,    AvrFmt::NONE,      1, 1, "SEN"    },  // 1001 0100 0010 1000
@@ -335,6 +335,13 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFFFF, 0x94D8, AvrOp::CLH,    AvrFmt::NONE,      1, 1, "CLH"    },  // 1001 0100 1101 1000
     { 0xFFFF, 0x94E8, AvrOp::CLT,    AvrFmt::NONE,      1, 1, "CLT"    },  // 1001 0100 1110 1000
     { 0xFFFF, 0x94F8, AvrOp::CLI,    AvrFmt::NONE,      1, 1, "CLI"    },  // 1001 0100 1111 1000
+
+    { 0xFF8F, 0x9408, AvrOp::BSET,   AvrFmt::b_only,    1, 1, "BSET"   },  // 1001 0100 0sss 1000
+    { 0xFF8F, 0x9488, AvrOp::BCLR,   AvrFmt::b_only,    1, 1, "BCLR"   },  // 1001 0100 1sss 1000
+    { 0xFE08, 0xF800, AvrOp::BLD,    AvrFmt::Rd_b,      1, 1, "BLD"    },  // 1111 100d dddd 0bbb
+    { 0xFE08, 0xFA00, AvrOp::BST,    AvrFmt::Rd_b,      1, 1, "BST"    },  // 1111 101d dddd 0bbb
+    { 0xFF00, 0x9800, AvrOp::CBI,    AvrFmt::IO_b,      1, 2, "CBI"    },  // 1001 1000 AAAA Abbb
+    { 0xFF00, 0x9A00, AvrOp::SBI,    AvrFmt::IO_b,      1, 2, "SBI"    },  // 1001 1010 AAAA Abbb
  
     // -----------------------------------------------------------------------
     // MCU control
@@ -347,7 +354,7 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFFFF, 0x95E8, AvrOp::SPM_E,  AvrFmt::NONE,      1, 1, "SPM"    },  // 1001 0101 1110 1000
 };
 
-Opcode decodeInstruction(uint16_t& instruction);
+bool decodeInstruction(uint16_t instruction, Opcode& out);
 
 // ---------------------------------------------------------------------------
 // Decoded operand structs — one per AvrFmt, returned by decode helpers below.

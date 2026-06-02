@@ -1,5 +1,6 @@
 #include "executor.h"
 #include "memory.h"
+#include "error.h"
 
 // ---------------------------------------------------------------------------
 // SREG bit indices (matches ATmega328P datasheet)
@@ -13,6 +14,8 @@
 #define SREG_T  6
 #define SREG_I  7
 
+static void skipNextInstruction(AvrState& state, const char* context);
+
 // ---------------------------------------------------------------------------
 // Execute loop
 // ---------------------------------------------------------------------------
@@ -24,25 +27,39 @@ bool executeProgram(AvrState& state) {
   uint16_t instruction;
   while (running) {
     uartPoll();
-    if (state.pc > AVR_FLASH_SIZE) {
-      std::cout << "end of memory reached" << std::endl;
+    if (state.pc + 1 >= AVR_FLASH_SIZE) {
+      emuErrorPc(state.pc, "program counter out of flash bounds");
       return false;
     }
+    const uint16_t instrPc = state.pc;
+    emuSetFaultPc(instrPc);
+
     // each instruction is two bytes, stored low byte then high byte
     instruction = state.flash[state.pc] | state.flash[state.pc + 1] << 8;
     state.pc += 2;
 
-    Opcode op = decodeInstruction(instruction);
-    std::cout << op.mnemonic << std::endl;
+    Opcode op;
+    if (!decodeInstruction(instruction, op)) {
+      emuErrorPcInstr(instrPc, instruction, "unknown opcode (not in decoder table)");
+      return false;
+    }
 
     // read second word for 32-bit instructions before executing
     uint16_t extra = 0;
     if (op.words == 2) {
+      if (state.pc + 1 >= AVR_FLASH_SIZE) {
+        emuErrorPc(state.pc, "32-bit instruction extends past end of flash");
+        return false;
+      }
       extra = state.flash[state.pc] | state.flash[state.pc + 1] << 8;
       state.pc += 2;
     }
 
+    memoryClearFault();
     if (!executeInstruction(state, op, instruction, extra)) {
+      return false;
+    }
+    if (memoryFaultPending()) {
       return false;
     }
   }
@@ -221,7 +238,8 @@ bool executeInstruction(AvrState& state, Opcode& op, uint16_t instr, uint16_t se
     case AvrOp::SPM_E:  executeSPM(state);    break;
 
     default:
-      std::cerr << "unknown opcode" << std::endl;
+      emuErrorPcInstr(emuFaultPc(), instr,
+                      "unimplemented opcode in executor (decoded but not handled)");
       return false;
   }
   return true;
@@ -654,9 +672,7 @@ void executeCPI(AvrState& state, OpsRdK8 ops) {
 
 void executeCPSE(AvrState& state, OpsRdRr ops) {
     if (state.r[ops.d] == state.r[ops.r]) {
-        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
-        Opcode nextOp = decodeInstruction(nextInstr);
-        state.pc += nextOp.words * 2;
+        skipNextInstruction(state, "CPSE skip: unknown next instruction");
     }
 }
 
@@ -743,6 +759,11 @@ void executeLDS(AvrState& state, OpsLdsSts ops) {
 
 void executeLPM(AvrState& state, OpsRd ops, uint8_t mode) {
     uint16_t Z = readRegWord(state, 30);
+    if (Z >= AVR_FLASH_SIZE) {
+      emuErrorPcAddr(emuFaultPc(), Z, "LPM", "flash read out of bounds");
+      memorySignalFault();
+      return;
+    }
     state.r[ops.d] = state.flash[Z];
     if (mode == 1) {
         Z++;
@@ -834,18 +855,20 @@ void executeSTS(AvrState& state, OpsLdsSts ops) {
 
 void executeBRBC(AvrState& state, OpsK7 ops) {
     if (!((state.sreg >> ops.s) & 1)) {
-        state.pc += ops.k;  // k is already sign-extended by decoder; PC is past instruction
+        // k is a 7-bit signed offset in 16-bit words; PC already points past the branch
+        state.pc += static_cast<int16_t>(ops.k) * 2;
     }
 }
 
 void executeBRBS(AvrState& state, OpsK7 ops) {
     if ((state.sreg >> ops.s) & 1) {
-        state.pc += ops.k;
+        state.pc += static_cast<int16_t>(ops.k) * 2;
     }
 }
 
 void executeRJMP(AvrState& state, OpsK02 ops) {
-    state.pc += ops.k;  // k already sign-extended 12-bit
+    // k is a 12-bit signed offset in 16-bit words; PC already points past RJMP
+    state.pc += static_cast<int16_t>(ops.k) * 2;
 }
 
 void executeJMP(AvrState& state, OpsK22 ops) {
@@ -853,12 +876,12 @@ void executeJMP(AvrState& state, OpsK22 ops) {
 }
 
 void executeIJMP(AvrState& state) {
-    state.pc = readRegWord(state, 30);
+    state.pc = readRegWord(state, 30) * 2;  // Z is a word address; PC is in bytes
 }
 
 void executeRCALL(AvrState& state, OpsK02 ops) {
     pushWord(state, state.pc);
-    state.pc += ops.k;
+    state.pc += static_cast<int16_t>(ops.k) * 2;
 }
 
 void executeCALL(AvrState& state, OpsK22 ops) {
@@ -868,7 +891,7 @@ void executeCALL(AvrState& state, OpsK22 ops) {
 
 void executeICALL(AvrState& state) {
     pushWord(state, state.pc);
-    state.pc = readRegWord(state, 30);
+    state.pc = readRegWord(state, 30) * 2;  // Z is a word address; PC is in bytes
 }
 
 void executeRET(AvrState& state) {
@@ -884,35 +907,43 @@ void executeRETI(AvrState& state) {
 // Skip instructions
 // ===========================================================================
 
+static void skipNextInstruction(AvrState& state, const char* context) {
+    if (state.pc + 1 >= AVR_FLASH_SIZE) {
+      emuErrorPc(state.pc, context);
+      memorySignalFault();
+      return;
+    }
+    uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+    Opcode nextOp;
+    if (!decodeInstruction(nextInstr, nextOp)) {
+      emuErrorPcInstr(state.pc, nextInstr, context);
+      memorySignalFault();
+      return;
+    }
+    state.pc += nextOp.words * 2;
+}
+
 void executeSBIC(AvrState& state, OpsIOB ops) {
     if (!getIOBit(state, ops.a, ops.b)) {
-        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
-        Opcode nextOp = decodeInstruction(nextInstr);
-        state.pc += nextOp.words * 2;
+        skipNextInstruction(state, "SBIC skip: unknown next instruction");
     }
 }
 
 void executeSBIS(AvrState& state, OpsIOB ops) {
     if (getIOBit(state, ops.a, ops.b)) {
-        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
-        Opcode nextOp = decodeInstruction(nextInstr);
-        state.pc += nextOp.words * 2;
+        skipNextInstruction(state, "SBIS skip: unknown next instruction");
     }
 }
 
 void executeSBRC(AvrState& state, OpsRrB ops) {
     if (!((state.r[ops.r] >> ops.b) & 1)) {
-        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
-        Opcode nextOp = decodeInstruction(nextInstr);
-        state.pc += nextOp.words * 2;
+        skipNextInstruction(state, "SBRC skip: unknown next instruction");
     }
 }
 
 void executeSBRS(AvrState& state, OpsRrB ops) {
     if ((state.r[ops.r] >> ops.b) & 1) {
-        uint16_t nextInstr = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
-        Opcode nextOp = decodeInstruction(nextInstr);
-        state.pc += nextOp.words * 2;
+        skipNextInstruction(state, "SBRS skip: unknown next instruction");
     }
 }
 

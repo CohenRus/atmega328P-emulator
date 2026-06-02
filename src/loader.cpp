@@ -1,7 +1,24 @@
 // Parses an AVR ELF binary and loads the executable text segment into the emulator's flash memory.
 
 #include "loader.h"
+#include "error.h"
+
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <iostream>
+
+namespace {
+
+void reportElfReadFailure(const char* path, const char* what) {
+  std::cerr << "error: " << what << " ('" << path << "')";
+  if (errno != 0) {
+    std::cerr << ": " << std::strerror(errno);
+  }
+  std::cerr << '\n';
+}
+
+}  // namespace
 
 // Loads firmware from an ELF file into emulator flash memory.
 // Preconditions: state must be a valid initialized AvrState; fileName must be a path to a well-formed AVR ELF binary.
@@ -10,27 +27,35 @@ bool loadFirmware(AvrState& state, char* fileName) {
   std::ifstream file(fileName, std::ios::binary);
 
   if (!file.is_open()) {
-    std::cerr << "failed to open elf file" << std::endl;
-    file.close();
+    emuErrorFile(fileName, "cannot open firmware file");
     return false;
   }
 
-  // read in the executable header
   Elf32_Ehdr header;
   if (!file.read(reinterpret_cast<char*>(&header), sizeof(header))) {
-    std::cerr << "error reading elf executable header" << std::endl;
-    file.close();
+    reportElfReadFailure(fileName, "failed to read ELF executable header");
     return false;
   }
-  
-  // read program headers in untill find the text one
-  Elf32_Phdr buffer;
+
+  if (header.e_phoff == 0 || header.e_phnum == 0) {
+    std::cerr << "error: ELF has no program headers ('" << fileName << "')\n";
+    return false;
+  }
+
+  file.seekg(static_cast<std::streamoff>(header.e_phoff), std::ios::beg);
+  if (!file) {
+    reportElfReadFailure(fileName, "failed to seek to ELF program header table");
+    return false;
+  }
+
+  Elf32_Phdr buffer{};
   bool found = false;
 
   for (int i = 0; i < header.e_phnum; i++) {
     if (!file.read(reinterpret_cast<char*>(&buffer), sizeof(buffer))) {
-      std::cerr << "error reading elf program headers" << std::endl;
-      file.close();
+      std::cerr << "error: failed to read ELF program header " << i
+                << " of " << static_cast<int>(header.e_phnum)
+                << " ('" << fileName << "')\n";
       return false;
     }
     if (isTextPhdr(buffer)) {
@@ -39,43 +64,54 @@ bool loadFirmware(AvrState& state, char* fileName) {
     }
   }
   if (!found) {
-    // malformed elf file, cannot load
-    std::cerr << "error finding text program header in elf file" << std::endl;
-    file.close();
+    std::cerr << "error: no loadable executable (PT_LOAD, R+X) segment in ELF ('"
+              << fileName << "')\n";
     return false;
   }
 
-  // jump to the given offset in the file 
-  file.seekg(buffer.p_offset, std::ios::beg);
+  file.seekg(static_cast<std::streamoff>(buffer.p_offset), std::ios::beg);
+  if (!file) {
+    std::cerr << "error: failed to seek to segment at file offset 0x"
+              << std::hex << buffer.p_offset << std::dec
+              << " ('" << fileName << "')\n";
+    return false;
+  }
 
-  // read in the text (should be runable hex)
   std::vector<uint8_t> data(buffer.p_filesz);
   if (!file.read(reinterpret_cast<char*>(data.data()), buffer.p_filesz)) {
-    std::cerr << "error reading unable hex" << std::endl;
-    file.close();
+    std::cerr << "error: failed to read " << buffer.p_filesz
+              << " byte .text segment at offset 0x"
+              << std::hex << buffer.p_offset << std::dec
+              << " ('" << fileName << "')\n";
     return false;
   }
 
-  // copy hex into state flash at the virtual address the linker specified
   if (buffer.p_vaddr + data.size() > sizeof(state.flash)) {
-    std::cerr << "firmware segment exceeds flash bounds" << std::endl;
-    file.close();
+    std::cerr << "error: firmware segment does not fit in flash: load at 0x"
+              << std::hex << buffer.p_vaddr << ", size " << std::dec << data.size()
+              << " bytes, flash size " << sizeof(state.flash)
+              << " ('" << fileName << "')\n";
     return false;
   }
   memcpy(state.flash + buffer.p_vaddr, data.data(), data.size());
 
-  // set initial PC from ELF entry point
-  state.pc = header.e_entry;
+  state.pc = static_cast<uint16_t>(header.e_entry);
+  if (header.e_entry >= AVR_FLASH_SIZE) {
+    std::cerr << "error: ELF entry point 0x" << std::hex << header.e_entry
+              << std::dec << " is outside flash ('" << fileName << "')\n";
+    return false;
+  }
 
-  file.close();
+  std::cout << "loaded firmware: " << data.size() << " bytes at flash 0x"
+            << std::hex << buffer.p_vaddr << ", entry 0x" << header.e_entry
+            << std::dec << '\n';
   return true;
 }
 
 // Returns true if the program header describes the executable text segment (loadable, readable, executable, not writable).
-// Preconditions: header must be a valid Elf32_Phdr populated from an ELF file.
 bool isTextPhdr(Elf32_Phdr& header) {
-  return header.p_type == PT_LOAD && // loadable
-         (header.p_flags & PF_X) && // excutable
-         (header.p_flags & PF_R) && // readable
-         !(header.p_flags & PF_W); // not writeable
+  return header.p_type == PT_LOAD &&
+         (header.p_flags & PF_X) &&
+         (header.p_flags & PF_R) &&
+         !(header.p_flags & PF_W);
 }

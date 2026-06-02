@@ -53,6 +53,10 @@ void     writeRegWord(AvrState& state, uint8_t reg, uint16_t value);
 uint8_t readDataByte(const AvrState& state, uint16_t addr);
 void    writeDataByte(AvrState& state, uint16_t addr, uint8_t value);
 
+bool memoryFaultPending();
+void memoryClearFault();
+void memorySignalFault();
+
 // ── I/O Register Bit Helpers ─────────────────────────────────────────────────
 //
 // Operate on I/O register address (0x00–0x3F), which maps to data-space
