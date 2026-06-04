@@ -1,8 +1,30 @@
-// decoding hex opcodes
+/*
+ * decoder.h — AVR instruction-set decoder for the ATmega328P emulator.
+ *
+ * Contains the complete opcode table (mask + pattern for every AVR
+ * instruction) and the operand-extraction helpers that pull register
+ * indices, immediates, and bit offsets from encoded instruction words.
+ *
+ * Design:
+ *   - decodeInstruction() performs a linear scan of OPCODE_TABLE[]. The
+ *     table is ordered so that more-specific masks (e.g. LDD) appear
+ *     before less-specific ones (e.g. LD base).
+ *   - Each decoded opcode carries an AvrFmt tag. The execute loop
+ *     dispatches to the matching operand decoder and then to the
+ *     instruction handler, keeping bit-twiddling out of the executor.
+ *   - 32-bit instructions (JMP, CALL, LDS, STS) use the `words` field
+ *     to signal that a second 16-bit word must be fetched.
+ */
 #pragma once
 #include <cstdint>
 
-// all the instructions
+// ---------------------------------------------------------------------------
+// AVR instruction set — one entry per mnemonic (including aliases).
+// ---------------------------------------------------------------------------
+
+// Every AVR instruction known to the emulator.
+// Aliases (e.g. BRLO = BRCS, CLR = EOR Rd,Rd) are distinct enum values
+// but share the same opcode table entry when they match the same pattern.
 enum class AvrOp {
     ADC,    // Add with Carry
     ADD,    // Add without Carry
@@ -119,46 +141,60 @@ enum class AvrOp {
     WDR,    // Watchdog Reset
 };
 
-// Operand encoding types
+// ---------------------------------------------------------------------------
+// Operand encoding formats — each tag signals which bit-layout to decode.
+// ---------------------------------------------------------------------------
+
+// Every AVR instruction encodes its operands in one of these formats.
+// The executor dispatches operand decoding based on this value.
 enum class AvrFmt {
-    NONE,       // NOP, RET, RETI, SLEEP, WDR, BREAK
+    NONE,       // No operands — NOP, RET, RETI, SLEEP, WDR, BREAK, etc.
     Rd_Rr,      // 0000 00rd dddd rrrr  — ADD, ADC, AND, CP, EOR, MOV, OR, SBC, SUB
     Rd_K8,      // 0000 KKKK dddd KKKK  — LDI, ANDI, ORI, SUBI, SBCI, CPI  (d: 16..31)
-    Rd_only,    // 0000 000d dddd xxxx  — INC, DEC, COM, NEG, PUSH, POP, etc.
+    Rd_only,    // 0000 000d dddd xxxx  — INC, DEC, COM, NEG, PUSH, POP, ASR, etc.
     Rd_Rr_mpy,  // 0000 0000 0ddd 0rrr  — MULSU, FMUL, FMULS, FMULSU  (d,r: 16..23)
-    Rd06_K6,    // 0000 0000 KKdd KKKK  — ADIW, SBIW  (dd: {24,26,28,30})
-    Rd06_Rr06,  // 0000 0000 dddd rrrr  — MOVW  (d,r even, /2)
-    b_only,     // 0000 0000 0bbb 0000  — BSET/BCLR
+    Rd06_K6,    // 0000 0000 KKdd KKKK  — ADIW, SBIW  (dd encodes {24,26,28,30})
+    Rd06_Rr06,  // 0000 0000 dddd rrrr  — MOVW  (raw nibbles, ×2 or +16 by caller)
+    b_only,     // 0000 0000 0bbb 0000  — BSET/BCLR  (bit index in [6:4])
     Rd_b,       // 0000 000d dddd 0bbb  — BLD/BST
     Rr_b,       // 0000 000r rrrr 0bbb  — SBRC/SBRS
     IO_b,       // 0000 0000 AAAA Abbb  — SBI/CBI/SBIC/SBIS
     Rd_IO,      // 0000 0AAd dddd AAAA  — IN
     IO_Rr,      // 0000 0AAr rrrr AAAA  — OUT
-    k7,         // 0000 0kkk kkkk ksss  — BRBC/BRBS
-    k02,        // 0000 kkkk kkkk kkkk  — RJMP
-    k02_call,   // 0000 kkkk kkkk kkkk  — RCALL
-    k22,        // 0000 000k kkkk 000k kkkk kkkk kkkk kkkk  — JMP (32-bit)
-    k22_call,   // 0000 000k kkkk 000k kkkk kkkk kkkk kkkk  — CALL (32-bit)
-    LD_family,  // various LD/ST modes (X/Y/Z with pre/post inc/dec)
-    LDD_family, // LDD/STD Rd, Y+q / Z+q
-    LDS_STS,    // 32-bit: 0000 00xd dddd 0000 kkkk kkkk kkkk kkkk
+    k7,         // 0000 0kkk kkkk ksss  — BRBC/BRBS  (7-bit signed offset + 3-bit SREG)
+    k02,        // 0000 kkkk kkkk kkkk  — RJMP  (12-bit signed word offset)
+    k02_call,   // 0000 kkkk kkkk kkkk  — RCALL  (same layout, different opcode)
+    k22,        // 32-bit JMP  — 10 bits in word1 + 16 bits in word2
+    k22_call,   // 32-bit CALL — same layout, different opcode
+    LD_family,  // Various LD/ST modes (X/Y/Z with base, post-inc, pre-dec)
+    LDD_family, // LDD/STD Rd, Y+q / Z+q  (q = 6-bit unsigned displacement)
+    LDS_STS,    // 32-bit: word1 carries Rd, word2 is the 16-bit data-space address
 };
 
-// opcode table entry
+// ---------------------------------------------------------------------------
+// Opcode table entry — one row per unique (mask, pattern) pair.
+// ---------------------------------------------------------------------------
+
+// Each entry describes one decoding rule. The table is scanned linearly
+// by decodeInstruction(); entries with narrower masks (e.g. 0xFFFF for
+// exact-match instructions like NOP) naturally take priority over
+// broader ones when they appear earlier.
 struct Opcode {
-    uint16_t    mask;       // bits to AND before comparing
-    uint16_t    code;    // what the result must equal
-    AvrOp       op;
-    AvrFmt      fmt;
-    uint8_t     words;      // 1 = 16-bit, 2 = 32-bit instruction
-    uint8_t     cycles_min; // base cycles (branching may add 1)
-    const char* mnemonic;   // for disassembly / debugging
+    uint16_t    mask;       // Bits that must match exactly  (AND with instruction)
+    uint16_t    code;       // Expected result after masking
+    AvrOp       op;         // Decoded instruction
+    AvrFmt      fmt;        // Operand encoding format
+    uint8_t     words;      // 1 = 16-bit instruction, 2 = 32-bit (requires second word)
+    uint8_t     cycles_min; // Minimum cycle count (branch taken adds +1)
+    const char* mnemonic;   // Canonical assembly mnemonic for disassembly/debugging
 };
 
-// every opcode with its mask, pattern, op, fmt, words, cycles, and mnemonic
+// The complete opcode table. Ordered so that narrower masks (exact
+// matches, LDD variants) appear before broader masks (LD base).
+// Scanned sequentially by decodeInstruction() on every fetch.
 static const Opcode OPCODE_TABLE[] = {
     // mask   code   op                    fmt              words  cyc  mnemonic
- 
+
     // -----------------------------------------------------------------------
     // Arithmetic
     // -----------------------------------------------------------------------
@@ -180,7 +216,7 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xF000, 0x4000, AvrOp::SBCI,   AvrFmt::Rd_K8,     1, 1, "SBCI"   },  // 0100 KKKK dddd KKKK
     { 0xFC00, 0x1800, AvrOp::SUB,    AvrFmt::Rd_Rr,     1, 1, "SUB"    },  // 0001 10rd dddd rrrr
     { 0xF000, 0x5000, AvrOp::SUBI,   AvrFmt::Rd_K8,     1, 1, "SUBI"   },  // 0101 KKKK dddd KKKK
- 
+
     // -----------------------------------------------------------------------
     // Logic
     // -----------------------------------------------------------------------
@@ -195,7 +231,7 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xF000, 0x6000, AvrOp::SBR,    AvrFmt::Rd_K8,     1, 1, "SBR"    },  // alias: ORI
     { 0xFF0F, 0xEF0F, AvrOp::SER,    AvrFmt::Rd_K8,     1, 1, "SER"    },  // 1110 1111 dddd 1111
     { 0xFE0F, 0x9402, AvrOp::SWAP,   AvrFmt::Rd_only,   1, 1, "SWAP"   },  // 1001 010d dddd 0010
- 
+
     // -----------------------------------------------------------------------
     // Shift / Rotate
     // -----------------------------------------------------------------------
@@ -203,7 +239,7 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFE0F, 0x9406, AvrOp::LSR,    AvrFmt::Rd_only,   1, 1, "LSR"    },  // 1001 010d dddd 0110
     { 0xFC00, 0x1C00, AvrOp::ROL,    AvrFmt::Rd_Rr,     1, 1, "ROL"    },  // alias: ADC Rd,Rd
     { 0xFE0F, 0x9407, AvrOp::ROR,    AvrFmt::Rd_only,   1, 1, "ROR"    },  // 1001 010d dddd 0111
- 
+
     // -----------------------------------------------------------------------
     // Compare
     // -----------------------------------------------------------------------
@@ -212,74 +248,79 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xF000, 0x3000, AvrOp::CPI,    AvrFmt::Rd_K8,     1, 1, "CPI"    },  // 0011 KKKK dddd KKKK
     { 0xFC00, 0x1000, AvrOp::CPSE,   AvrFmt::Rd_Rr,     1, 1, "CPSE"   },  // 0001 00rd dddd rrrr
     { 0xFC00, 0x2000, AvrOp::TST,    AvrFmt::Rd_Rr,     1, 1, "TST"    },  // alias: AND Rd,Rd
- 
+
     // -----------------------------------------------------------------------
     // Data Transfer
     // -----------------------------------------------------------------------
     { 0xFC00, 0x2C00, AvrOp::MOV,    AvrFmt::Rd_Rr,     1, 1, "MOV"    },  // 0010 11rd dddd rrrr
     { 0xFF00, 0x0100, AvrOp::MOVW,   AvrFmt::Rd06_Rr06, 1, 1, "MOVW"   },  // 0000 0001 dddd rrrr
     { 0xF000, 0xE000, AvrOp::LDI,    AvrFmt::Rd_K8,     1, 1, "LDI"    },  // 1110 KKKK dddd KKKK
- 
-    // LD X: (i) ..1100  (ii) ..1101  (iii) ..1110  — mask covers all three
+
+    // LD X: (i) base ..1100  (ii) post-inc ..1101  (iii) pre-dec ..1110
+    // Mask 0xFE0C matches all three modes; mode is extracted from bits [1:0].
     { 0xFE0F, 0x900F, AvrOp::POP,    AvrFmt::Rd_only,   1, 2, "POP"    },  // 1001 000d dddd 1111
 
     { 0xFE0C, 0x900C, AvrOp::LD_X,   AvrFmt::LD_family, 1, 2, "LD X"   },  // 1001 000d dddd 11xx
- 
-    // LDD Y+q — more specific than LD Y (base) when q=0
+
+    // LDD Y+q — must appear before LD Y (base) because its mask is narrower
+    // (0xD208 vs 0xFE0F) and an LDD with q=0 would otherwise match LD Y base.
     { 0xD208, 0x8008, AvrOp::LD_Y,   AvrFmt::LDD_family,1, 2, "LDD Y+q"},  // 10q0 qq0d dddd 1qqq
 
-    // LD Y: (i) 1000..1000  (ii)..1001 (iii)..1010
+    // LD Y: (i) base ..1000  (ii) post-inc ..1001  (iii) pre-dec ..1010
     { 0xFE0F, 0x8008, AvrOp::LD_Y,   AvrFmt::LD_family, 1, 2, "LD Y"   },  // 1000 000d dddd 1000
     { 0xFE0F, 0x9009, AvrOp::LD_Y,   AvrFmt::LD_family, 1, 2, "LD Y+"  },  // 1001 000d dddd 1001
     { 0xFE0F, 0x900A, AvrOp::LD_Y,   AvrFmt::LD_family, 1, 2, "LD -Y"  },  // 1001 000d dddd 1010
- 
-    // LDD Z+q — more specific than LD Z (base) when q=0
+
+    // LDD Z+q — must appear before LD Z (base) for the same reason as Y.
     { 0xD208, 0x8000, AvrOp::LD_Z,   AvrFmt::LDD_family,1, 2, "LDD Z+q"},  // 10q0 qq0d dddd 0qqq
 
-    // LD Z: (i) 1000..0000  (ii)..0001 (iii)..0010
+    // LD Z: (i) base ..0000  (ii) post-inc ..0001  (iii) pre-dec ..0010
     { 0xFE0F, 0x8000, AvrOp::LD_Z,   AvrFmt::LD_family, 1, 2, "LD Z"   },  // 1000 000d dddd 0000
     { 0xFE0F, 0x9001, AvrOp::LD_Z,   AvrFmt::LD_family, 1, 2, "LD Z+"  },  // 1001 000d dddd 0001
     { 0xFE0F, 0x9002, AvrOp::LD_Z,   AvrFmt::LD_family, 1, 2, "LD -Z"  },  // 1001 000d dddd 0010
- 
-    // LDS 32-bit (AVRe/AVRxm/AVRxt)
+
+    // LDS 32-bit (AVRe/AVRxm/AVRxt): word1 encodes Rd, word2 is the 16-bit addr.
     { 0xFE0F, 0x9000, AvrOp::LDS,    AvrFmt::LDS_STS,   2, 2, "LDS"    },  // 1001 000d dddd 0000 + k16
- 
-    // LPM: (i) R0 implied  (ii) Rd,Z  (iii) Rd,Z+
+
+    // LPM: three variants — (i) R0 implied, (ii) Rd,Z, (iii) Rd,Z+
     { 0xFFFF, 0x95C8, AvrOp::LPM,    AvrFmt::NONE,      1, 3, "LPM"    },  // 1001 0101 1100 1000
     { 0xFE0F, 0x9004, AvrOp::LPM,    AvrFmt::Rd_only,   1, 3, "LPM Rd,Z"  },  // 1001 000d dddd 0100
     { 0xFE0F, 0x9005, AvrOp::LPM,    AvrFmt::Rd_only,   1, 3, "LPM Rd,Z+" },  // 1001 000d dddd 0101
- 
+
     { 0xF800, 0xB000, AvrOp::IN,     AvrFmt::Rd_IO,     1, 1, "IN"     },  // 1011 0AAd dddd AAAA
     { 0xF800, 0xB800, AvrOp::OUT,    AvrFmt::IO_Rr,     1, 1, "OUT"    },  // 1011 1AAr rrrr AAAA
     { 0xFE0F, 0x920F, AvrOp::PUSH,   AvrFmt::Rd_only,   1, 2, "PUSH"   },  // 1001 001d dddd 1111
- 
-    // ST X: (i) ..1100  (ii) ..1101  (iii) ..1110
+
+    // ST X: (i) base ..1100  (ii) post-inc ..1101  (iii) pre-dec ..1110
     { 0xFE0C, 0x920C, AvrOp::ST_X,   AvrFmt::LD_family, 1, 2, "ST X"   },  // 1001 001r rrrr 11xx
- 
-    // STD Y+q — more specific than ST Y (base) when q=0
+
+    // STD Y+q — appears before ST Y base for the same masking reason as LD.
     { 0xD208, 0x8208, AvrOp::ST_Y,   AvrFmt::LDD_family,1, 2, "STD Y+q"},  // 10q0 qq1r rrrr 1qqq
 
-    // ST Y: (i) 1000..1000  (ii)..1001 (iii)..1010
+    // ST Y: (i) base ..1000  (ii) post-inc ..1001  (iii) pre-dec ..1010
     { 0xFE0F, 0x8208, AvrOp::ST_Y,   AvrFmt::LD_family, 1, 2, "ST Y"   },  // 1000 001r rrrr 1000
     { 0xFE0F, 0x9209, AvrOp::ST_Y,   AvrFmt::LD_family, 1, 2, "ST Y+"  },  // 1001 001r rrrr 1001
     { 0xFE0F, 0x920A, AvrOp::ST_Y,   AvrFmt::LD_family, 1, 2, "ST -Y"  },  // 1001 001r rrrr 1010
 
-    // STD Z+q — more specific than ST Z (base) when q=0
+    // STD Z+q — appears before ST Z base.
     { 0xD208, 0x8200, AvrOp::ST_Z,   AvrFmt::LDD_family,1, 2, "STD Z+q"},  // 10q0 qq1r rrrr 0qqq
 
-    // ST Z: (i) 1000..0000  (ii)..0001 (iii)..0010
+    // ST Z: (i) base ..0000  (ii) post-inc ..0001  (iii) pre-dec ..0010
     { 0xFE0F, 0x8200, AvrOp::ST_Z,   AvrFmt::LD_family, 1, 2, "ST Z"   },  // 1000 001r rrrr 0000
     { 0xFE0F, 0x9201, AvrOp::ST_Z,   AvrFmt::LD_family, 1, 2, "ST Z+"  },  // 1001 001r rrrr 0001
     { 0xFE0F, 0x9202, AvrOp::ST_Z,   AvrFmt::LD_family, 1, 2, "ST -Z"  },  // 1001 001r rrrr 0010
- 
-    // STS 32-bit (AVRe/AVRxm/AVRxt)
+
+    // STS 32-bit (AVRe/AVRxm/AVRxt): word1 encodes Rd, word2 is the 16-bit addr.
     { 0xFE0F, 0x9200, AvrOp::STS,    AvrFmt::LDS_STS,   2, 2, "STS"    },  // 1001 001d dddd 0000 + k16
- 
+
     // -----------------------------------------------------------------------
     // Branch / Jump / Call
     // -----------------------------------------------------------------------
     { 0xFC00, 0xF400, AvrOp::BRBC,   AvrFmt::k7,        1, 1, "BRBC"   },  // 1111 01kk kkkk ksss
     { 0xFC00, 0xF000, AvrOp::BRBS,   AvrFmt::k7,        1, 1, "BRBS"   },  // 1111 00kk kkkk ksss
+    // The BRxx mnemonics are specific encodings of BRBC/BRBS with fixed s bits.
+    // They appear before the generic BRBC/BRBS entries so they decode as their
+    // specific alias rather than the generic form.
     { 0xFC07, 0xF400, AvrOp::BRCC,   AvrFmt::k7,        1, 1, "BRCC"   },  // 1111 01kk kkkk k000
     { 0xFC07, 0xF000, AvrOp::BRCS,   AvrFmt::k7,        1, 1, "BRCS"   },  // 1111 00kk kkkk k000
     { 0xFC07, 0xF001, AvrOp::BREQ,   AvrFmt::k7,        1, 1, "BREQ"   },  // 1111 00kk kkkk k001
@@ -306,7 +347,7 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFFFF, 0x9509, AvrOp::ICALL,  AvrFmt::NONE,      1, 3, "ICALL"  },  // 1001 0101 0000 1001
     { 0xFFFF, 0x9508, AvrOp::RET,    AvrFmt::NONE,      1, 4, "RET"    },  // 1001 0101 0000 1000
     { 0xFFFF, 0x9518, AvrOp::RETI,   AvrFmt::NONE,      1, 4, "RETI"   },  // 1001 0101 0001 1000
- 
+
     // -----------------------------------------------------------------------
     // Skip instructions
     // -----------------------------------------------------------------------
@@ -314,11 +355,13 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFF00, 0x9B00, AvrOp::SBIS,   AvrFmt::IO_b,      1, 1, "SBIS"   },  // 1001 1011 AAAA Abbb
     { 0xFE08, 0xFC00, AvrOp::SBRC,   AvrFmt::Rr_b,      1, 1, "SBRC"   },  // 1111 110r rrrr 0bbb
     { 0xFE08, 0xFE00, AvrOp::SBRS,   AvrFmt::Rr_b,      1, 1, "SBRS"   },  // 1111 111r rrrr 0bbb
- 
+
     // -----------------------------------------------------------------------
     // Bit manipulation
     // -----------------------------------------------------------------------
-    // SREG flag set/clear aliases (all encoded as BSET/BCLR with fixed sss)
+    // SREG flag set/clear aliases (all encoded as BSET/BCLR with fixed sss bits).
+    // These exact-match entries (mask 0xFFFF) take priority over the generic
+    // BSET/BCLR patterns below.
     { 0xFFFF, 0x9408, AvrOp::SEC,    AvrFmt::NONE,      1, 1, "SEC"    },  // 1001 0100 0000 1000
     { 0xFFFF, 0x9418, AvrOp::SEZ,    AvrFmt::NONE,      1, 1, "SEZ"    },  // 1001 0100 0001 1000
     { 0xFFFF, 0x9428, AvrOp::SEN,    AvrFmt::NONE,      1, 1, "SEN"    },  // 1001 0100 0010 1000
@@ -336,13 +379,14 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFFFF, 0x94E8, AvrOp::CLT,    AvrFmt::NONE,      1, 1, "CLT"    },  // 1001 0100 1110 1000
     { 0xFFFF, 0x94F8, AvrOp::CLI,    AvrFmt::NONE,      1, 1, "CLI"    },  // 1001 0100 1111 1000
 
+    // Generic BSET/BCLR (any sss value not consumed by the aliases above).
     { 0xFF8F, 0x9408, AvrOp::BSET,   AvrFmt::b_only,    1, 1, "BSET"   },  // 1001 0100 0sss 1000
     { 0xFF8F, 0x9488, AvrOp::BCLR,   AvrFmt::b_only,    1, 1, "BCLR"   },  // 1001 0100 1sss 1000
     { 0xFE08, 0xF800, AvrOp::BLD,    AvrFmt::Rd_b,      1, 1, "BLD"    },  // 1111 100d dddd 0bbb
     { 0xFE08, 0xFA00, AvrOp::BST,    AvrFmt::Rd_b,      1, 1, "BST"    },  // 1111 101d dddd 0bbb
     { 0xFF00, 0x9800, AvrOp::CBI,    AvrFmt::IO_b,      1, 2, "CBI"    },  // 1001 1000 AAAA Abbb
     { 0xFF00, 0x9A00, AvrOp::SBI,    AvrFmt::IO_b,      1, 2, "SBI"    },  // 1001 1010 AAAA Abbb
- 
+
     // -----------------------------------------------------------------------
     // MCU control
     // -----------------------------------------------------------------------
@@ -354,6 +398,11 @@ static const Opcode OPCODE_TABLE[] = {
     { 0xFFFF, 0x95E8, AvrOp::SPM_E,  AvrFmt::NONE,      1, 1, "SPM"    },  // 1001 0101 1110 1000
 };
 
+// Match a 16-bit instruction word against the opcode table.
+// Returns the first matching entry via `out`.
+// @param instruction — the raw 16-bit opcode to decode
+// @param out         — [out] set to the matched Opcode on success
+// @return true if a matching entry was found, false if the instruction is unknown
 bool decodeInstruction(uint16_t instruction, Opcode& out);
 
 // ---------------------------------------------------------------------------
@@ -361,42 +410,122 @@ bool decodeInstruction(uint16_t instruction, Opcode& out);
 // Execute functions take these values directly instead of re-parsing raw bits.
 // ---------------------------------------------------------------------------
 
-struct OpsRdRr    { uint8_t d, r; };           // Rd_Rr
-struct OpsRdK8    { uint8_t d, k; };           // Rd_K8  (d already offset to 16..31)
-struct OpsRd      { uint8_t d; };              // Rd_only
-struct OpsRdRrMpy { uint8_t d, r; };           // Rd_Rr_mpy  (d,r already offset to 16..23)
-struct OpsRd06K6  { uint8_t d, k; };           // Rd06_K6  (d in {24,26,28,30})
-// Raw nibbles for Rd06_Rr06 — execute fn applies its own offset (MOVW ×2, MULS +16)
+struct OpsRdRr    { uint8_t d, r; };           // Rd_Rr  — source and destination registers
+struct OpsRdK8    { uint8_t d, k; };           // Rd_K8  — destination register, 8-bit immediate
+struct OpsRd      { uint8_t d; };              // Rd_only  — single destination register
+struct OpsRdRrMpy { uint8_t d, r; };           // Rd_Rr_mpy  — multiply operands (16..23)
+struct OpsRd06K6  { uint8_t d, k; };           // Rd06_K6  — word register pair, 6-bit immediate
+// Raw nibbles for Rd06_Rr06 — execute fn applies its own offset (MOVW ×2, MULS +16).
 struct OpsRd06Rr06 { uint8_t d, r; };
-struct OpsBOnly   { uint8_t b; };              // b_only
-struct OpsRdB     { uint8_t d, b; };           // Rd_b
-struct OpsRrB     { uint8_t r, b; };           // Rr_b
-struct OpsIOB     { uint8_t a, b; };           // IO_b
-struct OpsRdIO    { uint8_t d, a; };           // Rd_IO
-struct OpsIORr    { uint8_t a, r; };           // IO_Rr
-struct OpsK7      { int8_t k; uint8_t s; };    // k7   (k sign-extended, s = SREG bit)
-struct OpsK02     { int16_t k; };              // k02 / k02_call  (sign-extended 12-bit)
-struct OpsK22     { uint32_t k; };             // k22 / k22_call  (22-bit absolute addr)
-struct OpsLdSt    { uint8_t d, mode; };        // LD_family  (mode = instr & 0x03)
-struct OpsLdd     { uint8_t d, q; };           // LDD_family  (q = 6-bit displacement)
-struct OpsLdsSts  { uint8_t d; uint16_t addr; }; // LDS_STS
+struct OpsBOnly   { uint8_t b; };              // b_only  — SREG bit index (0..7)
+struct OpsRdB     { uint8_t d, b; };           // Rd_b  — register, bit index
+struct OpsRrB     { uint8_t r, b; };           // Rr_b  — register, bit index
+struct OpsIOB     { uint8_t a, b; };           // IO_b  — I/O address (0..31), bit index
+struct OpsRdIO    { uint8_t d, a; };           // Rd_IO  — destination register, I/O address
+struct OpsIORr    { uint8_t a, r; };           // IO_Rr  — I/O address, source register
+struct OpsK7      { int8_t k; uint8_t s; };    // k7  — signed 7-bit offset, SREG bit number
+struct OpsK02     { int16_t k; };              // k02 / k02_call  — sign-extended 12-bit offset
+struct OpsK22     { uint32_t k; };             // k22 / k22_call  — 22-bit absolute word address
+struct OpsLdSt    { uint8_t d, mode; };        // LD_family  — register, 2-bit addressing mode
+struct OpsLdd     { uint8_t d, q; };           // LDD_family  — register, 6-bit unsigned displacement
+struct OpsLdsSts  { uint8_t d; uint16_t addr; }; // LDS_STS  — register, 16-bit data-space address
 
-// Operand decoders — each extracts fields for the matching AvrFmt.
+// ---------------------------------------------------------------------------
+// Operand extractors — one per AvrFmt.
+// Each function decodes the register indices, immediates, and bit offsets
+// from the raw instruction word according to the format's bit layout.
+// ---------------------------------------------------------------------------
+
+// Rd_Rr: xxxx xxrd dddd rrrr  — destination and source registers.
+// @param instr — 16-bit instruction word
+// @return destination register in d, source register in r
 OpsRdRr     decodeRdRr(uint16_t instr);
+
+// Rd_K8: xxxx KKKK dddd KKKK  — destination register (16..31) and 8-bit immediate.
+// @param instr — 16-bit instruction word
+// @return destination register in d (already offset to 16..31), immediate in k
 OpsRdK8     decodeRdK8(uint16_t instr);
+
+// Rd_only: xxxx xxxd dddd xxxx  — single destination register.
+// @param instr — 16-bit instruction word
+// @return destination register in d (0..31)
 OpsRd       decodeRd(uint16_t instr);
+
+// Rd_Rr_mpy: xxxx xxxx 0ddd 0rrr  — multiply source/dest (both offset to 16..23).
+// @param instr — 16-bit instruction word
+// @return d and r in the range 16..23
 OpsRdRrMpy  decodeRdRrMpy(uint16_t instr);
+
+// Rd06_K6: xxxx xxxx KKdd KKKK  — word register pair and 6-bit immediate.
+// @param instr — 16-bit instruction word
+// @return d in {24,26,28,30}, k is the 6-bit unsigned immediate
 OpsRd06K6   decodeRd06K6(uint16_t instr);
+
+// Rd06_Rr06: xxxx xxxx dddd rrrr  — raw 4-bit register nibbles.
+// Callers apply offset: MOVW multiplies by 2, MULS adds 16.
+// @param instr — 16-bit instruction word
+// @return raw d and r nibbles (0..15)
 OpsRd06Rr06 decodeRd06Rr06(uint16_t instr);
+
+// b_only: xxxx xxxx xbbb xxxx  — SREG bit index for BSET/BCLR.
+// @param instr — 16-bit instruction word
+// @return bit index in b (0..7)
 OpsBOnly    decodeBOnly(uint16_t instr);
+
+// Rd_b: xxxx xxxd dddd xbbb  — register and bit index (BLD/BST).
+// @param instr — 16-bit instruction word
+// @return register in d, bit index in b (0..7)
 OpsRdB      decodeRdB(uint16_t instr);
+
+// Rr_b: xxxx xxxr rrrr xbbb  — register and bit index (SBRC/SBRS).
+// @param instr — 16-bit instruction word
+// @return register in r, bit index in b (0..7)
 OpsRrB      decodeRrB(uint16_t instr);
+
+// IO_b: xxxx xxxx AAAA Abbb  — I/O address and bit index.
+// @param instr — 16-bit instruction word
+// @return I/O address in a (0..31), bit index in b (0..7)
 OpsIOB      decodeIOB(uint16_t instr);
+
+// Rd_IO: xxxx xAAd dddd AAAA  — destination register, I/O address (IN).
+// @param instr — 16-bit instruction word
+// @return destination register in d, I/O address in a (0..63)
 OpsRdIO     decodeRdIO(uint16_t instr);
+
+// IO_Rr: xxxx xAAr rrrr AAAA  — I/O address, source register (OUT).
+// @param instr — 16-bit instruction word
+// @return I/O address in a, source register in r
 OpsIORr     decodeIORr(uint16_t instr);
+
+// k7: xxxx xxkk kkkk ksss  — 7-bit signed branch offset and SREG bit.
+// @param instr — 16-bit instruction word
+// @return k sign-extended offset (word units), s SREG bit index (0..7)
 OpsK7       decodeK7(uint16_t instr);
+
+// k02: xxxx kkkk kkkk kkkk  — 12-bit signed word offset (RJMP/RCALL).
+// @param instr — 16-bit instruction word
+// @return k sign-extended 12-bit value (word units)
 OpsK02      decodeK02(uint16_t instr);
+
+// k22: 32-bit JMP/CALL — 10 bits in word1, 16 bits in word2.
+// @param instr      — first 16-bit instruction word
+// @param secondWord — second 16-bit instruction word (fetched separately)
+// @return k 22-bit absolute word address
 OpsK22      decodeK22(uint16_t instr, uint16_t secondWord);
+
+// LD_family: xxxx xxxd dddd xxmm  — register and addressing mode.
+// Mode bits[1:0]: 0 = base (no change), 1 = post-increment, 2 = pre-decrement.
+// @param instr — 16-bit instruction word
+// @return register in d, mode in {0,1,2}
 OpsLdSt     decodeLdSt(uint16_t instr);
+
+// LDD_family: 10q0 qq0d dddd yqqq  — register and 6-bit displacement.
+// @param instr — 16-bit instruction word
+// @return register in d, 6-bit unsigned displacement in q
 OpsLdd      decodeLdd(uint16_t instr);
+
+// LDS_STS: 32-bit — register from word1, 16-bit address from word2.
+// @param instr      — first 16-bit instruction word
+// @param secondWord — second 16-bit instruction word (the data-space address)
+// @return register in d, 16-bit data-space address in addr
 OpsLdsSts   decodeLdsSts(uint16_t instr, uint16_t secondWord);
