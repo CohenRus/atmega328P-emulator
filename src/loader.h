@@ -73,10 +73,35 @@ struct Elf32_Phdr{
   Elf32_Word	p_align;		/* Segment alignment */
 };
 
+// section header (32-bit struct)
+struct Elf32_Shdr {
+  Elf32_Word	sh_name;		/* Section name (string tbl index) */
+  Elf32_Word	sh_type;		/* Section type */
+  Elf32_Word	sh_flags;		/* Section flags */
+  Elf32_Addr	sh_addr;		/* Section virtual addr at execution */
+  Elf32_Off	sh_offset;		/* Section file offset */
+  Elf32_Word	sh_size;		/* Section size in bytes */
+  Elf32_Word	sh_link;		/* Link to another section */
+  Elf32_Word	sh_info;		/* Additional section information */
+  Elf32_Word	sh_addralign;		/* Section alignment */
+  Elf32_Word	sh_entsize;		/* Entry size if section holds table */
+};
+
+// symbol table entry (32-bit struct)
+struct Elf32_Sym {
+  Elf32_Word	st_name;		/* Symbol name (string tbl index) */
+  Elf32_Addr	st_value;		/* Symbol value */
+  Elf32_Word	st_size;		/* Symbol size */
+  unsigned char	st_info;		/* Symbol type and binding */
+  unsigned char	st_other;		/* Symbol visibility */
+  Elf32_Half	st_shndx;		/* Section index */
+};
+
+#define SHT_SYMTAB  2
+#define SHT_STRTAB  3
+
 // load firmware into state memory, return true on success, false otherwise
 // Precondition: valid elf file which can be opened
 bool loadFirmware(AvrState& state, char* fileName);
 
-// parse program header to check for text segment
-bool isTextPhdr(Elf32_Phdr& header);
 

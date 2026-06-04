@@ -53,33 +53,37 @@ void uartPoll() {
 
 // ── UART register state (not stored in AvrState) ─────────────────────────────
 
-static uint8_t ubrrl  = 0;   // I/O 0x09 — UBRRL
-static uint8_t ucsrb  = 0;   // I/O 0x0A — UCSRB
-static uint8_t ucsrc  = 0;   // I/O 0x0D — UCSRC (set via I/O 0x0A with URSEL=1 on real HW; simplified)
+static uint8_t ubrrl  = 0;
+static uint8_t ucsrb  = 0;
+static uint8_t ucsrc  = 0;
 
-// ── Public helpers ───────────────────────────────────────────────────────────
+static uint8_t ucsra() {
+    uint8_t flags = (1 << 6) | (1 << 5);
+    if (stdinReady) flags |= (1 << 7);
+    return flags;
+}
 
 uint8_t uartRead(uint8_t ioAddr) {
     switch (ioAddr) {
+        // ATmega328P extended I/O mapping (data-space 0xC0-0xC6)
+        case 0x00: return ucsra();        // UCSR0A
+        case 0x01: return ucsrb;          // UCSR0B
+        case 0x02: return ucsrc;          // UCSR0C
+        case 0x04: return ubrrl;          // UBRR0L
+        case 0x05: return 0x00;           // UBRR0H (not used in async normal mode)
+        case 0x06: {                       // UDR0
+            if (stdinReady) { stdinReady = false; return (uint8_t)rxBuffer; }
+            return 0x00;
+        }
+
+        // Legacy ATmega168 I/O mapping (data-space 0x29-0x2D)
         case 0x09: return ubrrl;          // UBRRL
         case 0x0A: return ucsrb;          // UCSRB
-
-        case 0x0B: {                      // UCSRA
-            // RXC=bit7, TXC=bit6, UDRE=bit5 — others always 0
-            uint8_t flags = (1 << 6)      // TXC  — transmit complete
-                          | (1 << 5);     // UDRE — data register empty
-            if (stdinReady) flags |= (1 << 7);  // RXC — receive complete
-            return flags;
+        case 0x0B: return ucsra();        // UCSRA
+        case 0x0C: {                       // UDR
+            if (stdinReady) { stdinReady = false; return (uint8_t)rxBuffer; }
+            return 0x00;
         }
-
-        case 0x0C: {                      // UDR
-            if (stdinReady) {
-                stdinReady = false;
-                return (uint8_t)rxBuffer;
-            }
-            return 0x00;  // reading empty UDR returns 0 (undefined on real HW)
-        }
-
         case 0x0D: return ucsrc;          // UCSRC
         default:   return 0x00;
     }
@@ -87,13 +91,14 @@ uint8_t uartRead(uint8_t ioAddr) {
 
 void uartWrite(uint8_t ioAddr, uint8_t value) {
     switch (ioAddr) {
-        case 0x09: ubrrl = value; break;  // UBRRL
-        case 0x0A: ucsrb = value; break;  // UCSRB
-        case 0x0C:                        // UDR — transmit
-            std::cout.put((char)value);
-            std::cout.flush();
-            break;
-        case 0x0D: ucsrc = value; break;  // UCSRC
-        default:   break;
+        case 0x04: ubrrl = value; break;
+        case 0x01: ucsrb = value; break;
+        case 0x02: ucsrc = value; break;
+        case 0x06: std::cout.put((char)value); std::cout.flush(); break;
+        case 0x09: ubrrl = value; break;
+        case 0x0A: ucsrb = value; break;
+        case 0x0C: std::cout.put((char)value); std::cout.flush(); break;
+        case 0x0D: ucsrc = value; break;
+        default: break;
     }
 }

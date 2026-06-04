@@ -1,5 +1,6 @@
 #include "memory.h"
 #include "error.h"
+#include "timer0.h"
 
 namespace {
 
@@ -94,10 +95,21 @@ uint8_t readDataByte(const AvrState& state, uint16_t addr) {
         return state.sreg;
     }
 
-    // UART register range (data-space 0x29–0x2D)
-    if (addr >= 0x29 && addr <= 0x2D) {
-        return uartRead(addr - 0x20);
+    // Timer0 register range (data-space 0x35, 0x44–0x48, 0x6E)
+    {
+        uint8_t val = 0;
+        if (timer0Read(addr - 0x20, &val)) return val;
     }
+
+    // UART register range (data-space 0xC0–0xC6 for ATmega328P)
+    if (addr >= 0xC0 && addr <= 0xC6) {
+        return uartRead(addr - 0xC0);
+    }
+
+    // UART register range (data-space 0x29–0x2D for legacy ATmega168)
+     if (addr >= 0x29 && addr <= 0x2D) {
+         return uartRead(addr - 0x20);
+     }
 
     // I/O, extended I/O, and SRAM — all in sram[] indexed by data-space addr
     if (!dataAddrOk(addr)) {
@@ -128,7 +140,16 @@ void writeDataByte(AvrState& state, uint16_t addr, uint8_t value) {
         return;
     }
 
-    // UART register range (data-space 0x29–0x2D)
+    // Timer0 register range (data-space 0x35, 0x44–0x48, 0x6E)
+    if (timer0Write(addr - 0x20, value)) return;
+
+    // UART register range (data-space 0xC0–0xC6 for ATmega328P)
+    if (addr >= 0xC0 && addr <= 0xC6) {
+        uartWrite(addr - 0xC0, value);
+        return;
+    }
+
+    // UART register range (data-space 0x29–0x2D for legacy ATmega168)
     if (addr >= 0x29 && addr <= 0x2D) {
         uartWrite(addr - 0x20, value);
         return;

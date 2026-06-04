@@ -10,6 +10,8 @@ add_executable(emulator_test
     ../src/uart.cpp
     ../src/executor.cpp
     ../src/loader.cpp
+    ../src/timer0.cpp
+    ../src/interrupt.cpp
 )
 
 target_include_directories(emulator_test PRIVATE catch2 ../src)

@@ -20,6 +20,8 @@ set(CORE_SOURCES
     src/memory.cpp
     src/loader.cpp
     src/executor.cpp
+    src/timer0.cpp
+    src/interrupt.cpp
 )
 
 if(EMSCRIPTEN)

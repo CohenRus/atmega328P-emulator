@@ -1,7 +1,11 @@
 void setup() {
   Serial.begin(9600);
+  Serial.println("ready — type something:");
 }
 
 void loop() {
-  Serial.print("hi");
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    Serial.println(line);
+  }
 }

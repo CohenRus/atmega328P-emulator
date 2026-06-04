@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <iostream>
 #include "state.h"
 #include "decoder.h"
 

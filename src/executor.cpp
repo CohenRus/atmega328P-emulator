@@ -1,6 +1,14 @@
 #include "executor.h"
 #include "memory.h"
 #include "error.h"
+#include "timer0.h"
+#include "interrupt.h"
+#include <chrono>
+#include <thread>
+
+
+
+#define AVR_CPU_HZ 16000000ULL  // ATmega328P @ 16 MHz
 
 // ---------------------------------------------------------------------------
 // SREG bit indices (matches ATmega328P datasheet)
@@ -22,11 +30,23 @@ static void skipNextInstruction(AvrState& state, const char* context);
 bool executeProgram(AvrState& state) {
   clearState(state);
   uartInit();
+  timer0SetState(&state);
+  timer0Reset();
+  interruptSetState(&state);
+  interruptReset();
 
-  bool running = true;
+  auto wall_start = std::chrono::steady_clock::now();
   uint16_t instruction;
-  while (running) {
+  while (true) {
     uartPoll();
+
+    // Service pending interrupts before each instruction.
+    // Timer0 overflow flag was set in timer0Tick during the previous cycle.
+    if (interruptService()) {
+        timer0AckOverflow();  // hardware auto-clears TOV0 on dispatch
+        continue;
+    }
+
     if (state.pc + 1 >= AVR_FLASH_SIZE) {
       emuErrorPc(state.pc, "program counter out of flash bounds");
       return false;
@@ -62,17 +82,87 @@ bool executeProgram(AvrState& state) {
     if (memoryFaultPending()) {
       return false;
     }
+
+    // Advance peripheral timing
+    state.cycle_count += op.cycles_min;
+    timer0Tick(op.cycles_min);
+
+
+    // Wire Timer0 overflow to interrupt controller, or emulate the ISR
+    // if the firmware's vector table at 0x0020 still points to __bad_interrupt.
+    if (timer0OverflowPending()) {
+        // Check if TIMER0_OVF vector (flash[0x0020-0x0023]) is JMP 0x00BA (bad interrupt)
+        uint16_t vecWord1 = state.flash[0x0020] | (state.flash[0x0021] << 8);
+        uint16_t vecWord2 = state.flash[0x0022] | (state.flash[0x0023] << 8);
+        bool isBogus = false;
+        if ((vecWord1 & 0xFE0E) == 0x940C) {  // JMP encoding
+            // Decode the JMP target k (22-bit word address)
+            uint32_t k_hi = ((vecWord1 >> 4) & 0x1F) | ((vecWord1 & 1) << 5);
+            uint32_t k = (k_hi << 16) | vecWord2;
+            // JMP to word 0x005D = byte 0x00BA = __bad_interrupt
+            if (k == 0x005D) isBogus = true;
+        }
+
+        if (isBogus && state.timer0_millis_addr != 0) {
+            // Emulate the missing ISR: increment both timers.
+            uint16_t addr = state.timer0_millis_addr;
+            // NOTE: quick trace
+            static uint64_t lastLog = 0;
+            if (state.cycle_count - lastLog >= 16000000) {  // every ~1s virtual
+                lastLog = state.cycle_count;
+                uint32_t ms = (uint32_t)state.sram[addr] | ((uint32_t)state.sram[addr+1] << 8)
+                           | ((uint32_t)state.sram[addr+2] << 16) | ((uint32_t)state.sram[addr+3] << 24);
+                fprintf(stderr, "[tick] cycle=%llu millis=%u ovf=%u\n",
+                        (unsigned long long)state.cycle_count, ms,
+                        (unsigned)(state.sram[addr+4] | (state.sram[addr+5] << 8)
+                                  | (state.sram[addr+6] << 16) | (state.sram[addr+7] << 24)));
+            }
+            // timer0_millis (4 bytes)
+            uint32_t m = (uint32_t)state.sram[addr]
+                       | ((uint32_t)state.sram[addr+1] << 8)
+                       | ((uint32_t)state.sram[addr+2] << 16)
+                       | ((uint32_t)state.sram[addr+3] << 24);
+            m++;
+            state.sram[addr]   = (uint8_t)(m & 0xFF);
+            state.sram[addr+1] = (uint8_t)((m >> 8) & 0xFF);
+            state.sram[addr+2] = (uint8_t)((m >> 16) & 0xFF);
+            state.sram[addr+3] = (uint8_t)((m >> 24) & 0xFF);
+            // timer0_overflow_count (4 bytes at addr+4)
+            uint32_t ov = (uint32_t)state.sram[addr+4]
+                        | ((uint32_t)state.sram[addr+5] << 8)
+                        | ((uint32_t)state.sram[addr+6] << 16)
+                        | ((uint32_t)state.sram[addr+7] << 24);
+            ov++;
+            state.sram[addr+4] = (uint8_t)(ov & 0xFF);
+            state.sram[addr+5] = (uint8_t)((ov >> 8) & 0xFF);
+            state.sram[addr+6] = (uint8_t)((ov >> 16) & 0xFF);
+            state.sram[addr+7] = (uint8_t)((ov >> 24) & 0xFF);
+            timer0AckOverflow();
+        } else {
+            interruptRaise(InterruptVector::TIMER0_OVF);
+        }
+    }
+
+    // Wall-clock sync
+    {
+        auto target_wall = wall_start + std::chrono::microseconds(
+            state.cycle_count * 1000000ULL / AVR_CPU_HZ);
+        auto now = std::chrono::steady_clock::now();
+        auto ahead = target_wall - now;
+        if (ahead > std::chrono::microseconds(500)) {
+            std::this_thread::sleep_until(target_wall);
+        }
+    }
   }
-  return true;
 }
 
-// do any inital setup of memory state
 bool clearState(AvrState& state) {
   // registers
   for (uint8_t i = 0; i < 32; ++i) state.r[i] = 0;
-  state.pc   = 0;       // fallback; loadFirmware() overwrites with ELF entry point
+  state.pc   = 0;
   state.sreg = 0;
-  state.sp   = 0x08FF;  // RAMEND for ATmega328P
+  state.sp   = 0x08FF;
+  state.cycle_count = 0;
 
   // memory
   for (int i = 0; i < AVR_SRAM_SIZE;   ++i) state.sram[i]   = 0;
