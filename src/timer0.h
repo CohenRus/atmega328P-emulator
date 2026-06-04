@@ -54,3 +54,13 @@ bool timer0OverflowPending();
 
 // Clear TOV0 flag (hardware auto-clears this when TIMER0_OVF is serviced).
 void timer0AckOverflow();
+
+// True when Timer0 compare-match A interrupt is both enabled and flagged.
+bool timer0CompAPending();
+
+// True when Timer0 compare-match B interrupt is both enabled and flagged.
+bool timer0CompBPending();
+
+// Clear OCF0A / OCF0B flags after interrupt dispatch.
+void timer0AckCompA();
+void timer0AckCompB();

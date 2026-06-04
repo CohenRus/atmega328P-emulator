@@ -11,16 +11,22 @@
 // ===========================================================================
 
 #include "executor.h"
-#include "memory.h"
 #include "error.h"
-#include "timer0.h"
 #include "interrupt.h"
+#include "memory.h"
+#include "timer0.h"
+
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <thread>
 
 // ATmega328P nominal clock: 16 MHz
 #define AVR_CPU_HZ 16000000ULL
 
+// Cooperative stop flag.  Set to true from any thread to request the
+// execution loop to exit cleanly at the next iteration boundary.
+std::atomic<bool> g_emu_stop(false);
 // ---------------------------------------------------------------------------
 // SREG bit indices (matches ATmega328P datasheet §6.3)
 // ---------------------------------------------------------------------------
@@ -49,10 +55,9 @@ static void skipNextInstruction(AvrState& state, const char* context);
 //   7. Handles Timer0 overflow — either raises an interrupt or emulates
 //      the ISR in firmware when the vector table points to __bad_interrupt.
 //   8. Synchronizes with wall-clock to match real-time execution speed.
-//
 // @param state — the complete emulator runtime state (modified in place)
 // @return false on fatal error (bad PC, unknown opcode, memory fault);
-//         never returns true (loops until error or external termination)
+//         true on clean exit (g_emu_stop set)
 bool executeProgram(AvrState& state) {
   clearState(state);
   uartInit();
@@ -61,89 +66,35 @@ bool executeProgram(AvrState& state) {
   interruptSetState(&state);
   interruptReset();
 
+  // Pre-compute the bogus-vector check once — the TIMER0_OVF vector
+  // contents don't change after firmware load.
+  uint16_t vecWord1 = state.flash[0x0020] | (state.flash[0x0021] << 8);
+  uint16_t vecWord2 = state.flash[0x0022] | (state.flash[0x0023] << 8);
+  bool hasBogusOvfVector = false;
+  if ((vecWord1 & 0xFE0E) == 0x940C) {  // JMP opcode mask
+      uint32_t k_hi = ((vecWord1 >> 4) & 0x1F) | ((vecWord1 & 1) << 5);
+      uint32_t k = (k_hi << 16) | vecWord2;
+      if (k == 0x005D) hasBogusOvfVector = true;  // __bad_interrupt
+  }
+  bool useBogusOvf = hasBogusOvfVector && (state.timer0_millis_addr != 0);
+
   // Wall-clock anchor for real-time synchronization.
   auto wall_start = std::chrono::steady_clock::now();
   uint16_t instruction;
   while (true) {
+    // ── Cooperative stop check ──
+    if (g_emu_stop.load(std::memory_order_relaxed)) {
+        return true;  // clean exit requested by TUI
+    }
+
     uartPoll();
-
-    // Service pending interrupts before each instruction.
-    // Timer0 overflow flag was set in timer0Tick during the previous cycle.
-    if (interruptService()) {
-        // Hardware auto-clears TOV0 on dispatch; mirror that here.
-        timer0AckOverflow();
-        continue;  // skip instruction fetch — ISR was dispatched
-    }
-
-    // Bounds-check: each instruction is at least 1 word (2 bytes).
-    if (state.pc + 1 >= AVR_FLASH_SIZE) {
-      emuErrorPc(state.pc, "program counter out of flash bounds");
-      return false;
-    }
-    const uint16_t instrPc = state.pc;
-    emuSetFaultPc(instrPc);
-
-    // Fetch 16-bit instruction word (little-endian: low byte first).
-    instruction = state.flash[state.pc] | state.flash[state.pc + 1] << 8;
-    state.pc += 2;
-
-    Opcode op;
-    if (!decodeInstruction(instruction, op)) {
-      emuErrorPcInstr(instrPc, instruction, "unknown opcode (not in decoder table)");
-      return false;
-    }
-
-    // Read second word for 32-bit instructions (JMP, CALL, LDS, STS).
-    uint16_t extra = 0;
-    if (op.words == 2) {
-      if (state.pc + 1 >= AVR_FLASH_SIZE) {
-        emuErrorPc(state.pc, "32-bit instruction extends past end of flash");
-        return false;
-      }
-      extra = state.flash[state.pc] | state.flash[state.pc + 1] << 8;
-      state.pc += 2;
-    }
-
-    // Execute the instruction.  Memory faults (e.g. out-of-bounds SRAM access)
-    // are latched by the memory subsystem and checked after execution.
-    memoryClearFault();
-    if (!executeInstruction(state, op, instruction, extra)) {
-      return false;
-    }
-    if (memoryFaultPending()) {
-      return false;
-    }
-
-    // Advance peripheral timing by the instruction's cycle count.
-    state.cycle_count += op.cycles_min;
-    timer0Tick(op.cycles_min);
-
-    // Timer0 overflow handling.
-    // On real hardware, the TIMER0_OVF interrupt vector fires.
-    // When the firmware doesn't define an ISR, the vector contains a JMP to
-    // __bad_interrupt (byte addr 0x00BA), and the user's millis() counter
-    // would never advance.  We detect this case and emulate the ISR:
-    // incrementing timer0_millis and timer0_overflow_count directly in SRAM.
+    // ── Sync Timer0 flags → interrupt controller ──
+    // Runs at the top so overflows/compare-matches that occurred while
+    // I=0 (e.g. during ISR) are raised before the next user instruction.
     if (timer0OverflowPending()) {
-        // Check if TIMER0_OVF vector (flash[0x0020-0x0023]) is JMP 0x005D
-        // (word address 0x005D = byte address 0x00BA = __bad_interrupt).
-        uint16_t vecWord1 = state.flash[0x0020] | (state.flash[0x0021] << 8);
-        uint16_t vecWord2 = state.flash[0x0022] | (state.flash[0x0023] << 8);
-        bool isBogus = false;
-        if ((vecWord1 & 0xFE0E) == 0x940C) {  // JMP opcode mask
-            // Decode the JMP target: k[21:17] from word1 bits [8:4] + bit[0],
-            // k[15:0] from word2.
-            uint32_t k_hi = ((vecWord1 >> 4) & 0x1F) | ((vecWord1 & 1) << 5);
-            uint32_t k = (k_hi << 16) | vecWord2;
-            // Word address 0x005D = byte 0x00BA = __bad_interrupt.
-            if (k == 0x005D) isBogus = true;
-        }
-
-        if (isBogus && state.timer0_millis_addr != 0) {
-            // Emulate the missing ISR: increment both 32-bit counters in SRAM.
+        if (useBogusOvf) {
             uint16_t addr = state.timer0_millis_addr;
 
-            // Debug trace: log millis value every ~1 virtual second.
             static uint64_t lastLog = 0;
             if (state.cycle_count - lastLog >= 16000000) {
                 lastLog = state.cycle_count;
@@ -155,7 +106,6 @@ bool executeProgram(AvrState& state) {
                                   | (state.sram[addr+6] << 16) | (state.sram[addr+7] << 24)));
             }
 
-            // Increment timer0_millis (4 bytes at addr, little-endian).
             uint32_t m = (uint32_t)state.sram[addr]
                        | ((uint32_t)state.sram[addr+1] << 8)
                        | ((uint32_t)state.sram[addr+2] << 16)
@@ -166,7 +116,6 @@ bool executeProgram(AvrState& state) {
             state.sram[addr+2] = (uint8_t)((m >> 16) & 0xFF);
             state.sram[addr+3] = (uint8_t)((m >> 24) & 0xFF);
 
-            // Increment timer0_overflow_count (4 bytes at addr+4).
             uint32_t ov = (uint32_t)state.sram[addr+4]
                         | ((uint32_t)state.sram[addr+5] << 8)
                         | ((uint32_t)state.sram[addr+6] << 16)
@@ -178,19 +127,78 @@ bool executeProgram(AvrState& state) {
             state.sram[addr+7] = (uint8_t)((ov >> 24) & 0xFF);
             timer0AckOverflow();
         } else {
-            // Normal path: raise TIMER0_OVF interrupt for firmware to handle.
             interruptRaise(InterruptVector::TIMER0_OVF);
         }
     }
+    if (timer0CompAPending()) {
+        interruptRaise(InterruptVector::TIMER0_COMPA);
+    }
+    if (timer0CompBPending()) {
+        interruptRaise(InterruptVector::TIMER0_COMPB);
+    }
 
-    // Wall-clock synchronization: sleep if we're running ahead of real time.
-    // Only sleep when we're more than 500 µs ahead to avoid excessive syscalls.
+    // ── Service pending interrupts ──
+    if (interruptService()) {
+        // Hardware auto-clears the TIFR flag on dispatch.
+        // Acknowledge all Timer0 flags — the one that fired will be cleared;
+        // others are unaffected by the &= ~mask.
+        timer0AckOverflow();
+        timer0AckCompA();
+        timer0AckCompB();
+        continue;
+    }
+
+    // ── Fetch ──
+    if (state.pc + 1 >= AVR_FLASH_SIZE) {
+      emuErrorPc(state.pc, "program counter out of flash bounds");
+      return false;
+    }
+    const uint16_t instrPc = state.pc;
+    emuSetFaultPc(instrPc);
+
+    instruction = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+    state.pc += 2;
+
+    Opcode op;
+    if (!decodeInstruction(instruction, op)) {
+      emuErrorPcInstr(instrPc, instruction, "unknown opcode (not in decoder table)");
+      return false;
+    }
+
+    // ── Fetch second word for 32-bit instructions ──
+    uint16_t extra = 0;
+    if (op.words == 2) {
+      if (state.pc + 1 >= AVR_FLASH_SIZE) {
+        emuErrorPc(state.pc, "32-bit instruction extends past end of flash");
+        return false;
+      }
+      extra = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+      state.pc += 2;
+    }
+
+    // ── Execute ──
+    memoryClearFault();
+    state.extra_cycles = 0;
+    if (!executeInstruction(state, op, instruction, extra)) {
+      return false;
+    }
+    if (memoryFaultPending()) {
+      return false;
+    }
+
+    // ── Advance peripheral timing ──
+    uint16_t total_cycles = op.cycles_min + state.extra_cycles;
+    state.cycle_count += total_cycles;
+    timer0Tick(total_cycles);
+
+    // ── Wall-clock synchronization ──
+    // Sleep only when more than 100 µs ahead to balance precision vs syscall cost.
     {
         auto target_wall = wall_start + std::chrono::microseconds(
             state.cycle_count * 1000000ULL / AVR_CPU_HZ);
         auto now = std::chrono::steady_clock::now();
         auto ahead = target_wall - now;
-        if (ahead > std::chrono::microseconds(500)) {
+        if (ahead > std::chrono::microseconds(100)) {
             std::this_thread::sleep_until(target_wall);
         }
     }
@@ -216,7 +224,7 @@ bool clearState(AvrState& state) {
   // SP initializes to RAMEND (0x08FF for ATmega328P).
   state.sp   = 0x08FF;
   state.cycle_count = 0;
-
+  state.extra_cycles = 0;
   // Zero all SRAM and EEPROM.
   for (int i = 0; i < AVR_SRAM_SIZE;   ++i) state.sram[i]   = 0;
   for (int i = 0; i < AVR_EEPROM_SIZE; ++i) state.eeprom[i] = 0;
@@ -1110,6 +1118,7 @@ void executeCPI(AvrState& state, OpsRdK8 ops) {
 void executeCPSE(AvrState& state, OpsRdRr ops) {
     if (state.r[ops.d] == state.r[ops.r]) {
         skipNextInstruction(state, "CPSE skip: unknown next instruction");
+        state.extra_cycles = 1;  // skip costs 1 extra cycle
     }
 }
 
@@ -1459,12 +1468,11 @@ void executeSTS(AvrState& state, OpsLdsSts ops) {
 //
 // SREG affected: None.  Conditionally modifies PC only.
 //
-// @param ops.s — SREG bit index (0–7) to test
-// @param ops.k — 7-bit signed word offset (-64 to +63 words)
 void executeBRBC(AvrState& state, OpsK7 ops) {
     if (!((state.sreg >> ops.s) & 1)) {
         // PC already points past the branch instruction; add signed offset in bytes.
         state.pc += static_cast<int16_t>(ops.k) * 2;
+        state.extra_cycles = 1;  // branch taken costs 1 extra cycle
     }
 }
 
@@ -1475,10 +1483,10 @@ void executeBRBC(AvrState& state, OpsK7 ops) {
 // SREG affected: None.
 //
 // @param ops.s — SREG bit index (0–7) to test
-// @param ops.k — 7-bit signed word offset (-64 to +63 words)
 void executeBRBS(AvrState& state, OpsK7 ops) {
     if ((state.sreg >> ops.s) & 1) {
         state.pc += static_cast<int16_t>(ops.k) * 2;
+        state.extra_cycles = 1;  // branch taken costs 1 extra cycle
     }
 }
 
@@ -1609,6 +1617,7 @@ static void skipNextInstruction(AvrState& state, const char* context) {
 void executeSBIC(AvrState& state, OpsIOB ops) {
     if (!getIOBit(state, ops.a, ops.b)) {
         skipNextInstruction(state, "SBIC skip: unknown next instruction");
+        state.extra_cycles = 1;
     }
 }
 
@@ -1623,6 +1632,7 @@ void executeSBIC(AvrState& state, OpsIOB ops) {
 void executeSBIS(AvrState& state, OpsIOB ops) {
     if (getIOBit(state, ops.a, ops.b)) {
         skipNextInstruction(state, "SBIS skip: unknown next instruction");
+        state.extra_cycles = 1;
     }
 }
 
@@ -1636,6 +1646,7 @@ void executeSBIS(AvrState& state, OpsIOB ops) {
 void executeSBRC(AvrState& state, OpsRrB ops) {
     if (!((state.r[ops.r] >> ops.b) & 1)) {
         skipNextInstruction(state, "SBRC skip: unknown next instruction");
+        state.extra_cycles = 1;
     }
 }
 
@@ -1649,6 +1660,7 @@ void executeSBRC(AvrState& state, OpsRrB ops) {
 void executeSBRS(AvrState& state, OpsRrB ops) {
     if ((state.r[ops.r] >> ops.b) & 1) {
         skipNextInstruction(state, "SBRS skip: unknown next instruction");
+        state.extra_cycles = 1;
     }
 }
 

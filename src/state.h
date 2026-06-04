@@ -16,6 +16,7 @@ struct AvrState {
   uint8_t sreg; // status register
   uint16_t sp; // stack pointer
   uint64_t cycle_count; // total elapsed CPU cycles (for peripheral timing)
+  uint8_t  extra_cycles; // extra cycles for branch taken / skip (resets to 0 each instruction)
   uint16_t timer0_millis_addr; // SRAM address of timer0_millis (0 = unknown)
 
   // memory

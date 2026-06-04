@@ -50,17 +50,14 @@ TEST_CASE("Timer0: TCCR0B read/write through data-space", "[timer0][io]") {
 }
 
 TEST_CASE("Timer0: TCCR0A read/write through data-space", "[timer0][io]") {
-    REQUIRE(readTimerIO(s, 0x25) == 0x03);
-}
-
-TEST_CASE("Timer0: TCCR0A read/write through data-space", "[timer0][io]") {
     auto s = freshState();
     timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x24, 0x42);  // TCCR0A
-    REQUIRE(readTimerIO(s, 0x26) == 0x42);
+    REQUIRE(readTimerIO(s, 0x24) == 0x42);
 }
+
 
 TEST_CASE("Timer0: OCR0A read/write through data-space", "[timer0][io]") {
     auto s = freshState();

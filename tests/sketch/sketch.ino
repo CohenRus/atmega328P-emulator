@@ -6,6 +6,8 @@ void setup() {
 void loop() {
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
-    Serial.println(line);
+    Serial.println("you said: " + line);
   }
+  // Serial.println("hi");
+  // delay(2000);
 }

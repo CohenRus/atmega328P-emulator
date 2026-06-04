@@ -90,27 +90,27 @@ void timer0Tick(uint16_t cycles) {
     uint16_t top = (wgm() == T0_WGM_CTC) ? ocr0a : 0xFF;
 
     // Drain the accumulator one prescaler tick at a time.
-    // This loop may run multiple iterations if a long-latency instruction
-    // caused the accumulator to exceed several prescaler periods.
     while (prescaler_acc >= div) {
         prescaler_acc -= div;
 
-        // Compute next TCNT0 value in 16-bit space to detect overflow without
-        // losing the carry on wrap-around.
+        // Capture previous value for compare-match detection.
+        // On real hardware, OCF0x is set one timer clock cycle after
+        // TCNT0 reaches the match value.
+        uint8_t prev = tcnt0;
+
+        // Compute next TCNT0 value in 16-bit space to detect overflow.
         uint16_t next = (uint16_t)tcnt0 + 1;
         if (next > top) {
-            // Overflow: wrap to 0 and set the overflow flag.
             tcnt0 = 0;
             tifr0 |= (1 << T0_TOV0);
         } else {
             tcnt0 = (uint8_t)next;
         }
 
-        // Check compare-match events (fired after TCNT0 reaches the match value).
-        // In real hardware, these are set on the next timer clock cycle after
-        // the match; our loop processes one tick per iteration, matching that.
-        if (tcnt0 == ocr0a) tifr0 |= (1 << T0_OCF0A);
-        if (tcnt0 == ocr0b) tifr0 |= (1 << T0_OCF0B);
+        // Compare-match: flag is set one cycle after TCNT0 == OCR0x.
+        // Check against the *previous* TCNT0 value.
+        if (prev == ocr0a) tifr0 |= (1 << T0_OCF0A);
+        if (prev == ocr0b) tifr0 |= (1 << T0_OCF0B);
     }
 }
 
@@ -142,7 +142,7 @@ bool timer0Write(uint8_t ioAddr, uint8_t value) {
     switch (ioAddr) {
         case 0x24: tccr0a = value; return true;  // TCCR0A
         case 0x25: tccr0b = value; return true;  // TCCR0B
-        case 0x26: tcnt0  = value; return true;  // TCNT0
+        case 0x26: tcnt0  = value; prescaler_acc = 0; return true;  // TCNT0 (also resets prescaler)
         case 0x27: ocr0a  = value; return true;  // OCR0A
         case 0x28: ocr0b  = value; return true;  // OCR0B
         case 0x4E: timsk0 = value; return true;  // TIMSK0
@@ -159,3 +159,15 @@ bool timer0OverflowPending() { return (timsk0 & (1 << T0_TOIE0)) && (tifr0 & (1 
 // Acknowledge the Timer0 overflow interrupt by clearing the TOV0 flag.
 // Called by the interrupt controller after dispatching TIMER0_OVF.
 void timer0AckOverflow() { tifr0 &= ~(1 << T0_TOV0); }
+
+// Check whether the Timer0 compare-match A interrupt should be dispatched.
+bool timer0CompAPending() { return (timsk0 & (1 << T0_OCIE0A)) && (tifr0 & (1 << T0_OCF0A)); }
+
+// Check whether the Timer0 compare-match B interrupt should be dispatched.
+bool timer0CompBPending() { return (timsk0 & (1 << T0_OCIE0B)) && (tifr0 & (1 << T0_OCF0B)); }
+
+// Acknowledge the Timer0 compare-match A interrupt by clearing OCF0A.
+void timer0AckCompA() { tifr0 &= ~(1 << T0_OCF0A); }
+
+// Acknowledge the Timer0 compare-match B interrupt by clearing OCF0B.
+void timer0AckCompB() { tifr0 &= ~(1 << T0_OCF0B); }

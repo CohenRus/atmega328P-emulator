@@ -42,7 +42,9 @@ enum class InterruptVector : uint8_t {
     TIMER0_COMPA   = 15,
     TIMER0_COMPB   = 16,
     TIMER0_OVF     = 17,
-    // … higher vectors omitted for brevity until needed
+    USART_RX       = 19,   // USART Rx Complete
+    USART_UDRE     = 20,   // USART Data Register Empty
+    USART_TX       = 21,   // USART Tx Complete
 };
 
 void interruptSetState(AvrState* state);

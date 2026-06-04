@@ -4,6 +4,7 @@ add_executable(emulator_test
     catch2/catch_amalgamated.cpp
     test_decoder.cpp
     test_instructions.cpp
+    test_timer0.cpp
     ../src/decoder.cpp
     ../src/error.cpp
     ../src/memory.cpp

@@ -12,11 +12,10 @@
 // ===========================================================================
 
 #pragma once
-
+#include <atomic>
 #include <cstdint>
-#include "state.h"
 #include "decoder.h"
-
+#include "state.h"
 // ===========================================================================
 // Top-level entry points
 // ===========================================================================
@@ -24,9 +23,9 @@
 // Runs the fetch-decode-execute loop.  Initializes all peripherals, then
 // loops indefinitely: poll UART, service interrupts, fetch/decode/execute
 // each instruction, advance Timer0, and sync with wall-clock.
+// Returns true on clean exit (g_emu_stop set), false on fatal error.
 //
 // @param state — emulator runtime state (modified in place each cycle)
-// @return false on fatal error; never returns true (loops until error)
 bool executeProgram(AvrState& state);
 
 // Resets the emulator to power-on state: all GP registers → 0, PC → 0,
@@ -36,8 +35,14 @@ bool executeProgram(AvrState& state);
 // @return always true
 bool clearState(AvrState& state);
 
+// Set to true from any thread to request the execution loop to exit
+// at the next iteration boundary.  executeProgram checks this at the
+// top of each cycle and returns true (clean exit) when set.
+extern std::atomic<bool> g_emu_stop;
+
 // Decodes operands from the raw instruction word(s) based on op.fmt,
 // then calls the matching instruction executor.  Aliased opcodes
+// dispatch to the canonical implementation.
 // dispatch to the canonical implementation.
 //
 // @param state      — emulator runtime state
