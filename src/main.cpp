@@ -5,9 +5,9 @@
  *   emulator [firmware.elf]    — load and run with TUI
  *   emulator                    — fuzzy-find .elf with fzf, then run
  *
- * The TUI has a top bar showing the filename, a left panel for emulated
- * serial output (cout), and a right panel for serial input (cin).
- * Press Escape or Ctrl+C to stop the emulator.
+ * The TUI stacks vertically: header, scrolling serial output,
+ * an input prompt at the bottom, and a status bar.
+ * Press Escape to stop, Enter to send typed input.
  */
 #include <atomic>
 #include <cstdlib>
@@ -71,40 +71,53 @@ static std::string fzfSelectElf() {
 
 int runTui(const std::string& elfPath) {
   uartSetTuiMode();
-
-  AvrState state;
+  AvrState state{};
+  clearState(state);
   std::vector<char> pathBuf(elfPath.begin(), elfPath.end());
   pathBuf.push_back('\0');
   if (!loadFirmware(state, pathBuf.data())) {
     return 2;
   }
 
-  // Suppress stderr from the emulator thread (tick logs) so they don't
-  // corrupt the FTXUI display.  In headless mode these go to the terminal;
-  // in TUI mode the terminal is occupied by the UI.
-  freopen("/dev/null", "w", stderr);
+  // Redirect stderr to a debug file so we can diagnose emulator errors
+  // without corrupting the FTXUI display.
+  freopen("emu_debug.log", "w", stderr);
 
   std::atomic<bool> emuDone(false);
   std::atomic<bool> emuError(false);
+  std::atomic<bool> refreshStop(false);
+
   std::thread emuThread([&]() {
-    bool ok = executeProgram(state);
-    emuError.store(!ok);
+    try {
+      bool ok = executeProgram(state);
+      emuError.store(!ok);
+    } catch (const std::exception& e) {
+      emuErrorFile(elfPath.c_str(), e.what());
+      emuError.store(true);
+    } catch (...) {
+      emuErrorFile(elfPath.c_str(), "unknown exception in emulator thread");
+      emuError.store(true);
+    }
     emuDone.store(true);
+  });
+
+  // Post refresh events every ~16ms so the FTXUI screen redraws
+  // even when no keyboard/mouse events are arriving.
+  auto screen = ScreenInteractive::Fullscreen();
+  std::thread refreshThread([&]() {
+    while (!refreshStop.load(std::memory_order_relaxed)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      screen.Post(Event::Custom);
+    }
   });
 
   // Shared TUI state.
   std::string coutText;
   std::string cinInput;
-  constexpr int kPanelWidth = 70;
-
   std::string displayName = elfPath;
   auto slash = displayName.rfind('/');
   if (slash != std::string::npos) displayName = displayName.substr(slash + 1);
-
-  auto screen = ScreenInteractive::Fullscreen();
-
   Component cinInputComp = Input(&cinInput, "type here, Enter to send");
-
   auto renderer = Renderer(cinInputComp, [&] {
     // Drain TX buffer.
     std::string newTx = uartPopTx();
@@ -114,39 +127,58 @@ int runTui(const std::string& elfPath) {
         coutText = coutText.substr(coutText.size() - 80000);
       }
     }
-
-    auto topBar = text(" Running: " + displayName + " ")
-                | bold | center | border;
-
-    auto coutPanel = text(coutText.empty() ? "(no output yet)" : coutText)
-                   | frame
-                   | size(WIDTH, GREATER_THAN, kPanelWidth)
-                   | border;
-
-    auto cinLabel = text(" Serial input: ") | dim;
-    auto cinField = cinInputComp->Render() | border;
-    auto cinPanel = vbox({
-        cinLabel,
-        cinField,
+    // ── Header ──────────────────────────────────────────────────────────
+    std::string statusDot;
+    Color      statusColor;
+    if (emuDone.load()) {
+      statusDot = emuError.load() ? " ERROR " : " STOPPED ";
+      statusColor = emuError.load() ? Color::Red : Color::Yellow;
+    } else {
+      statusDot = " RUNNING ";
+      statusColor = Color::Green;
+    }
+    auto header = hbox({
+        text(" ") | size(WIDTH, EQUAL, 1),
+        text(displayName) | bold | color(Color::Cyan),
+        text("  atmega328p emulator") | dim,
         filler(),
-    }) | size(WIDTH, GREATER_THAN, kPanelWidth) | border;
-
+        text(statusDot) | bgcolor(statusColor) | color(Color::Black) | bold,
+        text(" ") | size(WIDTH, EQUAL, 1),
+    });
+    // ── Output ──────────────────────────────────────────────────────────
+    auto output = text(coutText.empty() ? "  (no output yet)" : coutText)
+                | dim
+                | frame
+                | flex;
+    // ── Divider ─────────────────────────────────────────────────────────
+    auto divider = separator() | color(Color::Grey30);
+    // ── Input ───────────────────────────────────────────────────────────
+    auto prompt = text(" ▶ ") | color(Color::GreenLight) | bold;
+    auto inputArea = hbox({
+        text(" ") | size(WIDTH, EQUAL, 1),
+        prompt,
+        cinInputComp->Render() | flex,
+        text(" ") | size(WIDTH, EQUAL, 1),
+    });
+    // ── Status bar ──────────────────────────────────────────────────────
     std::string status;
     if (emuDone.load()) {
-      status = emuError.load() ? " EMULATOR STOPPED (error) — press Esc to exit "
-                               : " EMULATOR STOPPED — press Esc to exit ";
+      if (emuError.load()) {
+        char errBuf[256];
+        emuGetLastError(errBuf, sizeof(errBuf));
+        status = std::string(" ") + errBuf + " — Esc to exit ";
+      } else {
+        status = " Emulator stopped — Esc to exit ";
+      }
     } else {
-      status = " Running… (Esc to stop) ";
+      status = " ● Running — Esc to stop | Enter to send ";
     }
     auto statusBar = text(status) | inverted | center;
-
     return vbox({
-        topBar,
-        hbox({
-            coutPanel,
-            separator(),
-            cinPanel,
-        }) | flex,
+        header,
+        output | flex,
+        divider,
+        inputArea,
         statusBar,
     });
   });
@@ -175,7 +207,9 @@ int runTui(const std::string& elfPath) {
 
   screen.Loop(renderer);
 
+  refreshStop.store(true);
   g_emu_stop.store(true);
+  if (refreshThread.joinable()) refreshThread.join();
   if (emuThread.joinable()) emuThread.join();
 
   return emuError.load() ? 3 : 0;

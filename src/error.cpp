@@ -7,96 +7,76 @@
  *
  * Design: all output goes to stderr. The format helpers below avoid
  * repeating the "error:" prefix and PC/instruction/address suffixes.
+ *
+ * Each error function also captures its message into g_emu_last_error
+ * so the TUI can display the last error without parsing stderr.
  */
 
 #include "error.h"
-
 #include <cstdio>
-#include <iostream>
+#include <cstring>
+#include <mutex>
+
+// Last error captured for UI consumption. Protected by g_error_mutex.
+static std::mutex g_error_mutex;
+static char g_emu_last_error[256] = "";
 
 namespace {
-
 // The PC of the currently executing instruction, or 0xFFFF if unset.
 uint16_t g_faultPc = 0xFFFF;
-
-// Write the standard "error:" prefix to stderr.
-void writePrefix() {
-  std::cerr << "error: ";
-}
-
-// Write " at PC 0xXXXX" to stderr.
-// @param pc — program counter word address
-void writePc(uint16_t pc) {
-  std::fprintf(stderr, " at PC 0x%04X", pc);
-}
-
-// Write " (instruction 0xXXXX)" to stderr.
-// @param instruction — 16-bit opcode
-void writeInstr(uint16_t instruction) {
-  std::fprintf(stderr, " (instruction 0x%04X)", instruction);
-}
-
-// Write " (address 0xXXXX)" to stderr.
-// @param addr — data-space byte address
-void writeAddr(uint16_t addr) {
-  std::fprintf(stderr, " (address 0x%04X)", addr);
-}
-
+// The raw 16-bit instruction word at g_faultPc, or 0xFFFF if unset.
+uint16_t g_faultInstr = 0xFFFF;
 }  // namespace
 
+
 // Record the PC at which the current instruction started executing.
-// Called by the executor before dispatching each instruction.
 void emuSetFaultPc(uint16_t pc) {
   g_faultPc = pc;
 }
-
-// Return the currently-set fault PC.
 uint16_t emuFaultPc() {
   return g_faultPc;
 }
-
-// Generic error — just the message, no extra context.
+void emuSetFaultInstr(uint16_t instr) {
+  g_faultInstr = instr;
+}
+uint16_t emuFaultInstr() {
+  return g_faultInstr;
+}
 void emuError(const char* message) {
-  writePrefix();
-  std::cerr << message << '\n';
+  std::lock_guard<std::mutex> lock(g_error_mutex);
+  std::snprintf(g_emu_last_error, sizeof(g_emu_last_error), "%s", message);
+  std::fprintf(stderr, "error: %s\n", message);
 }
-
-// Error associated with a filesystem path (ELF loading failures, etc.).
-// Omits the path if it is NULL or empty.
 void emuErrorFile(const char* path, const char* message) {
-  writePrefix();
-  std::cerr << message;
+  std::lock_guard<std::mutex> lock(g_error_mutex);
   if (path && path[0] != '\0') {
-    std::cerr << " ('" << path << "')";
+    std::snprintf(g_emu_last_error, sizeof(g_emu_last_error), "%s ('%s')", message, path);
+    std::fprintf(stderr, "error: %s ('%s')\n", message, path);
+  } else {
+    std::snprintf(g_emu_last_error, sizeof(g_emu_last_error), "%s", message);
+    std::fprintf(stderr, "error: %s\n", message);
   }
-  std::cerr << '\n';
 }
-
-// Error with a program counter.
 void emuErrorPc(uint16_t pc, const char* message) {
-  writePrefix();
-  std::cerr << message;
-  writePc(pc);
-  std::cerr << '\n';
+  std::lock_guard<std::mutex> lock(g_error_mutex);
+  std::snprintf(g_emu_last_error, sizeof(g_emu_last_error), "%s at PC 0x%04X", message, pc);
+  std::fprintf(stderr, "error: %s at PC 0x%04X\n", message, pc);
 }
-
-// Error with PC and the instruction word that faulted.
-// Useful when the instruction itself is unknown or illegal.
 void emuErrorPcInstr(uint16_t pc, uint16_t instruction, const char* message) {
-  writePrefix();
-  std::cerr << message;
-  writePc(pc);
-  writeInstr(instruction);
-  std::cerr << '\n';
+  std::lock_guard<std::mutex> lock(g_error_mutex);
+  std::snprintf(g_emu_last_error, sizeof(g_emu_last_error), "%s at PC 0x%04X (0x%04X)", message, pc, instruction);
+  std::fprintf(stderr, "error: %s at PC 0x%04X (instruction 0x%04X)\n", message, pc, instruction);
 }
-
-// Error with PC, faulting data-space address, access type, and detail.
-// Used by memory/stack access violations within an instruction.
 void emuErrorPcAddr(uint16_t pc, uint16_t addr, const char* access, const char* detail) {
-  writePrefix();
-  std::cerr << detail;
-  writePc(pc);
-  std::cerr << " during " << access;
-  writeAddr(addr);
-  std::cerr << '\n';
+  std::lock_guard<std::mutex> lock(g_error_mutex);
+  std::snprintf(g_emu_last_error, sizeof(g_emu_last_error),
+                "%s at PC 0x%04X (instr 0x%04X) addr 0x%04X (%s)",
+                detail, pc, g_faultInstr, addr, access);
+  std::fprintf(stderr, "error: %s at PC 0x%04X (instr 0x%04X) during %s (address 0x%04X)\n",
+               detail, pc, g_faultInstr, access, addr);
+}
+void emuGetLastError(char* buf, size_t bufsize) {
+  std::lock_guard<std::mutex> lock(g_error_mutex);
+  std::strncpy(buf, g_emu_last_error, bufsize);
+  buf[bufsize - 1] = '\0';
 }

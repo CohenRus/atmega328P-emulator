@@ -185,24 +185,36 @@ bool loadFirmware(AvrState& state, char* fileName) {
         return false;
       }
 
-      // Flash placement: must fit after .text.
-      if (nextFlashAddr + data.size() > sizeof(state.flash)) {
+      // Flash placement: use the segment's physical address (LMA) as the
+      // destination in flash so the CRT's __data_load_start matches.
+      // On AVR, p_paddr may equal p_vaddr (both 0x80xxxx); in that common
+      // case, fall back to nextFlashAddr which follows .text contiguously.
+      uint32_t flashDest;
+      if (ph.p_paddr >= 0x800000) {
+        flashDest = nextFlashAddr;
+      } else {
+        flashDest = ph.p_paddr;
+      }
+      if (flashDest + data.size() > sizeof(state.flash)) {
         std::cerr << "error: .data initial values do not fit in flash ('"
                   << fileName << "')\n";
         return false;
       }
-      memcpy(state.flash + nextFlashAddr, data.data(), data.size());
+      memcpy(state.flash + flashDest, data.data(), data.size());
 
       // SRAM placement: direct copy so the emulator sees initialized globals.
       if (sramAddr + data.size() <= sizeof(state.sram)) {
         memcpy(state.sram + sramAddr, data.data(), data.size());
+      } else {
+        std::cerr << "warning: .data segment at sram 0x"
+                  << std::hex << sramAddr << std::dec
+                  << " + " << data.size() << " bytes does not fit in SRAM ("
+                  << sizeof(state.sram) << " bytes) — global variables will be uninitialized\n";
       }
-
       std::cout << "loaded .data: " << data.size() << " bytes at flash 0x"
-                << std::hex << nextFlashAddr << " → sram 0x"
+                << std::hex << flashDest << " → sram 0x"
                 << sramAddr << std::dec << '\n';
-
-      nextFlashAddr += static_cast<uint32_t>(data.size());
+      nextFlashAddr = flashDest + static_cast<uint32_t>(data.size());
     }
 
     if (ph.p_memsz > ph.p_filesz) {
@@ -212,6 +224,10 @@ bool loadFirmware(AvrState& state, char* fileName) {
       uint16_t bssSize  = static_cast<uint16_t>(ph.p_memsz - ph.p_filesz);
       if (bssStart + bssSize <= sizeof(state.sram)) {
         memset(state.sram + bssStart, 0, bssSize);
+      } else {
+        std::cerr << "warning: .bss segment at sram 0x"
+                  << std::hex << bssStart << std::dec
+                  << " + " << bssSize << " bytes does not fit in SRAM\n";
       }
       std::cout << "zeroed .bss: " << bssSize << " bytes at sram 0x"
                 << std::hex << bssStart << std::dec << '\n';
@@ -263,23 +279,39 @@ bool loadFirmware(AvrState& state, char* fileName) {
       file.seekg(static_cast<std::streamoff>(symtab->sh_offset), std::ios::beg);
       std::vector<Elf32_Sym> syms(count);
       file.read(reinterpret_cast<char*>(syms.data()), symtab->sh_size);
-
+      uint32_t dataLoadStart = 0;
+      uint32_t dataStart = 0;
       for (auto& sym : syms) {
-        // sym.st_name is an offset into .strtab; verify it's in bounds.
-        if (sym.st_name < strtabSize &&
-            strcmp(strtabData + sym.st_name, "timer0_millis") == 0) {
-          // Convert AVR data-space vaddr (0x80xxxx) → SRAM byte offset.
+        if (sym.st_name >= strtabSize) continue;
+        const char* name = strtabData + sym.st_name;
+        if (strcmp(name, "timer0_millis") == 0) {
           if (sym.st_value >= 0x800000 && sym.st_value <= 0x80FFFF) {
             state.timer0_millis_addr =
                 static_cast<uint16_t>(sym.st_value - 0x800000);
           }
-          break;  // only need the first match
         }
+        else if (strcmp(name, "__data_load_start") == 0) {
+          dataLoadStart = sym.st_value;
+        }
+        else if (strcmp(name, "__data_start") == 0) {
+          dataStart = sym.st_value;
+        }
+        else if (strcmp(name, "__malloc_heap_start") == 0 ||
+                 strcmp(name, "__heap_start") == 0) {
+          if (sym.st_value >= 0x800000 && sym.st_value <= 0x80FFFF) {
+            std::cout << "heap start: 0x" << std::hex
+                      << (sym.st_value - 0x800000) << std::dec << '\n';
+          }
+        }
+      }
+      if (dataLoadStart != 0 || dataStart != 0) {
+        std::cout << "CRT .data info: __data_load_start=0x"
+                  << std::hex << dataLoadStart
+                  << " __data_start=0x" << dataStart << std::dec << '\n';
       }
     }
     delete[] strtabData;  // free the heap-allocated string table copy
   }
-
   if (state.timer0_millis_addr != 0) {
     std::cout << "found timer0_millis at sram 0x"
               << std::hex << state.timer0_millis_addr << std::dec << '\n';

@@ -45,7 +45,7 @@ static uint32_t pending = 0;
 // @param vec — interrupt vector
 // @return flash byte address for the vector's entry in the interrupt table
 static uint16_t vectorAddr(InterruptVector vec) {
-    return (static_cast<uint8_t>(vec) - 1) * 2;
+    return (static_cast<uint8_t>(vec) - 1) * 4;
 }
 
 // Find the highest-priority pending interrupt.

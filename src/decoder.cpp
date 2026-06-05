@@ -207,9 +207,8 @@ OpsK02 decodeK02(uint16_t instr) {
 // @param secondWord — second 16-bit instruction word
 // @return k 22-bit absolute word address
 OpsK22 decodeK22(uint16_t instr, uint16_t secondWord) {
-    uint32_t k = ((uint32_t)((instr >> 4) & 0x1F) << 17)  // bits[21:17] from word1[8:4]
-               | ((uint32_t)(instr & 0x01)         << 16)  // bit[16] from word1[0]
-               | secondWord;                              // bits[15:0] from word2
+    uint32_t k = ((uint32_t)((instr >> 4) & 0x3F) << 16)  // bits[21:16] from word1[9:4]
+               | secondWord;                                // bits[15:0] from word2
     return {k};
 }
 
@@ -235,8 +234,8 @@ OpsLdSt decodeLdSt(uint16_t instr) {
 OpsLdd decodeLdd(uint16_t instr) {
     uint8_t d = (instr >> 4) & 0x1F;
     // Reassemble the 6-bit displacement from its scattered fields.
-    // q[5]  ← bit 13 (shifted by 8 then & 0x20 keeps only that bit at position 5)
-    // q[4:3] ← bits[12:11] (shifted by 7 then & 0x18 captures two bits at positions 4:3)
+    // q[5]   ← bit 13  (shifted by 8 places to bit 5, masked with 0x20)
+    // q[4:3] ← bits[11:10] (shifted by 7 places to bits 4:3, masked with 0x18)
     // q[2:0] ← bits[2:0]
     uint8_t q = ((instr >> 8) & 0x20) | ((instr >> 7) & 0x18) | (instr & 0x07);
     return {d, q};

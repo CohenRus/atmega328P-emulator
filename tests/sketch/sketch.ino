@@ -8,6 +8,4 @@ void loop() {
     String line = Serial.readStringUntil('\n');
     Serial.println("you said: " + line);
   }
-  // Serial.println("hi");
-  // delay(2000);
 }

@@ -102,7 +102,11 @@ void timer0Tick(uint16_t cycles) {
         uint16_t next = (uint16_t)tcnt0 + 1;
         if (next > top) {
             tcnt0 = 0;
-            tifr0 |= (1 << T0_TOV0);
+            // TOV0 is set on overflow in Normal and Fast PWM modes,
+            // but NOT in CTC mode (WGM=2) where only OCF0A fires.
+            if (wgm() != T0_WGM_CTC) {
+                tifr0 |= (1 << T0_TOV0);
+            }
         } else {
             tcnt0 = (uint8_t)next;
         }

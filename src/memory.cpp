@@ -17,9 +17,9 @@
 // - Stack overflow/underflow is detected with bounds checks against
 //   STACK_BOTTOM (0x0100) and DATA_SPACE_END (0x08FF).
 // ===========================================================================
-
 #include "memory.h"
 #include "error.h"
+#include "state.h"
 #include "timer0.h"
 
 // Top of the data-space address range (ATmega328P: 0x08FF = RAMEND).
@@ -38,6 +38,42 @@ bool g_memoryFault = false;
 void faultDataAddr(uint16_t addr, const char* access) {
   g_memoryFault = true;
   emuErrorPcAddr(emuFaultPc(), addr, access, "invalid data-space access");
+}
+static void dumpFaultContext(const AvrState& state, uint16_t /*faultAddr*/, const char* /*access*/) {
+  std::fprintf(stderr, "debug: fault context — PC=0x%04X SP=0x%04X X=0x%02X%02X Y=0x%02X%02X Z=0x%02X%02X\n",
+               state.pc, state.sp,
+               state.r[27], state.r[26],
+               state.r[29], state.r[28],
+               state.r[31], state.r[30]);
+  std::fprintf(stderr, "debug: registers — ");
+  for (int i = 0; i < 32; i++) std::fprintf(stderr, "r%02d=0x%02X ", i, state.r[i]);
+  std::fprintf(stderr, "\nsreg=0x%02X\n", state.sreg);
+  // Dump .data and .bss
+  std::fprintf(stderr, "debug: .data region (sram 0x100-0x13F):");
+  for (uint16_t a = 0x100; a <= 0x13F; a++) {
+    if ((a & 0x0F) == 0) std::fprintf(stderr, "\n  %04X:", a);
+    std::fprintf(stderr, " %02X", state.sram[a]);
+  }
+  std::fprintf(stderr, "\n");
+  std::fprintf(stderr, "debug: .bss region (sram 0x140-0x16F):");
+  for (uint16_t a = 0x140; a <= 0x16F; a++) {
+    if ((a & 0x0F) == 0) std::fprintf(stderr, "\n  %04X:", a);
+    std::fprintf(stderr, " %02X", state.sram[a]);
+  }
+  std::fprintf(stderr, "\n");
+  // Dump flash init values
+  std::fprintf(stderr, "debug: flash init values at 0xC5E:");
+  for (uint32_t a = 0xC5E; a <= 0xC9E; a++) {
+    if ((a & 0x0F) == 0) std::fprintf(stderr, "\n  %04X:", a);
+    std::fprintf(stderr, " %02X", state.flash[a]);
+  }
+  std::fprintf(stderr, "\n");
+  // Dump flash at reset vector
+  std::fprintf(stderr, "debug: flash at 0x0000 (reset vector):\n");
+  for (uint32_t a = 0x0000; a <= 0x0020; a += 2) {
+    uint16_t w = state.flash[a] | (state.flash[a + 1] << 8);
+    std::fprintf(stderr, "  0x%04X: 0x%04X\n", a, w);
+  }
 }
 
 // Log a stack-related fault (overflow or underflow) and raise the fault flag.
@@ -190,6 +226,7 @@ uint8_t readDataByte(const AvrState& state, uint16_t addr) {
     // I/O, extended I/O, and SRAM — all stored contiguously in state.sram[].
     // sram[] is indexed directly by data-space address (0x0020–0x08FF).
     if (!dataAddrOk(addr)) {
+      dumpFaultContext(state, addr, "read");
       faultDataAddr(addr, "read");
       return 0;
     }
@@ -246,6 +283,7 @@ void writeDataByte(AvrState& state, uint16_t addr, uint8_t value) {
 
     // I/O, extended I/O, and SRAM (contiguous sram[] array)
     if (!dataAddrOk(addr)) {
+      dumpFaultContext(state, addr, "write");
       faultDataAddr(addr, "write");
       return;
     }

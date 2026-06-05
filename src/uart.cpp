@@ -136,6 +136,7 @@ void uartPoll() {
 static uint8_t ucsra() {
     uint8_t flags = (1 << 6) | (1 << 5);
     if (tuiMode.load()) {
+        std::lock_guard<std::mutex> lock(tuiMutex);
         if (rxHwReady) flags |= (1 << 7);
     } else {
         if (stdinReady) flags |= (1 << 7);
@@ -144,10 +145,10 @@ static uint8_t ucsra() {
 }
 
 // ── uartRead ────────────────────────────────────────────────────────────────
-
 uint8_t uartRead(uint8_t ioAddr) {
     auto consumeByte = [&]() -> uint8_t {
         if (tuiMode.load()) {
+            std::lock_guard<std::mutex> lock(tuiMutex);
             if (rxHwReady) { rxHwReady = false; return (uint8_t)rxHwByte; }
         } else {
             if (stdinReady) { stdinReady = false; return (uint8_t)rxBuffer; }
@@ -178,10 +179,14 @@ uint8_t uartRead(uint8_t ioAddr) {
 
 void uartWrite(uint8_t ioAddr, uint8_t value) {
     switch (ioAddr) {
-        case 0x04: ubrrl = value; break;
-        case 0x01: ucsrb = value; break;
-        case 0x02: ucsrc = value; break;
-        case 0x06:
+        // ATmega328P extended I/O mapping (data-space 0xC0-0xC6)
+        case 0x00:               break; // UCSR0A — mostly read-only; TXCn write-1-to-clear is harmless to ignore
+        case 0x01: ucsrb = value; break; // UCSR0B
+        case 0x02: ucsrc = value; break; // UCSR0C
+        case 0x03:               break; // reserved
+        case 0x04: ubrrl = value; break; // UBRR0L
+        case 0x05:               break; // UBRR0H — baud rate high byte, ignored (common baud rates fit in 8 bits)
+        case 0x06:                       // UDR0 — transmit
             if (tuiMode.load()) {
                 std::lock_guard<std::mutex> lock(tuiMutex);
                 txBuffer += (char)value;
@@ -190,11 +195,11 @@ void uartWrite(uint8_t ioAddr, uint8_t value) {
                 std::cout.flush();
             }
             break;
-
-        // Legacy ATmega168 mapping
-        case 0x09: ubrrl = value; break;
-        case 0x0A: ucsrb = value; break;
-        case 0x0C:
+        // Legacy ATmega168 I/O mapping (data-space 0x29-0x2D)
+        case 0x09: ubrrl = value; break; // UBRRL
+        case 0x0A: ucsrb = value; break; // UCSRB
+        case 0x0B:               break; // UCSRA — read-only
+        case 0x0C:                       // UDR — transmit
             if (tuiMode.load()) {
                 std::lock_guard<std::mutex> lock(tuiMutex);
                 txBuffer += (char)value;
@@ -203,7 +208,7 @@ void uartWrite(uint8_t ioAddr, uint8_t value) {
                 std::cout.flush();
             }
             break;
-        case 0x0D: ucsrc = value; break;
+        case 0x0D: ucsrc = value; break; // UCSRC
         default: break;
     }
 }

@@ -20,7 +20,6 @@
 #include <chrono>
 #include <cstdio>
 #include <thread>
-
 // ATmega328P nominal clock: 16 MHz
 #define AVR_CPU_HZ 16000000ULL
 
@@ -59,7 +58,8 @@ static void skipNextInstruction(AvrState& state, const char* context);
 // @return false on fatal error (bad PC, unknown opcode, memory fault);
 //         true on clean exit (g_emu_stop set)
 bool executeProgram(AvrState& state) {
-  clearState(state);
+  // State (registers, PC, SP, SRAM) is already initialized by the caller.
+  // Only peripheral state needs resetting here.
   uartInit();
   timer0SetState(&state);
   timer0Reset();
@@ -67,17 +67,15 @@ bool executeProgram(AvrState& state) {
   interruptReset();
 
   // Pre-compute the bogus-vector check once — the TIMER0_OVF vector
-  // contents don't change after firmware load.
-  uint16_t vecWord1 = state.flash[0x0020] | (state.flash[0x0021] << 8);
-  uint16_t vecWord2 = state.flash[0x0022] | (state.flash[0x0023] << 8);
+  // (vector 17) is at byte offset (17-1)*4 = 0x40 with 4-byte JMP entries.
+  uint16_t vecWord1 = state.flash[0x0040] | (state.flash[0x0041] << 8);
+  uint16_t vecWord2 = state.flash[0x0042] | (state.flash[0x0043] << 8);
   bool hasBogusOvfVector = false;
   if ((vecWord1 & 0xFE0E) == 0x940C) {  // JMP opcode mask
-      uint32_t k_hi = ((vecWord1 >> 4) & 0x1F) | ((vecWord1 & 1) << 5);
-      uint32_t k = (k_hi << 16) | vecWord2;
-      if (k == 0x005D) hasBogusOvfVector = true;  // __bad_interrupt
+      OpsK22 decoded = decodeK22(vecWord1, vecWord2);
+      if (decoded.k == 0x005D) hasBogusOvfVector = true;  // __bad_interrupt
   }
   bool useBogusOvf = hasBogusOvfVector && (state.timer0_millis_addr != 0);
-
   // Wall-clock anchor for real-time synchronization.
   auto wall_start = std::chrono::steady_clock::now();
   uint16_t instruction;
@@ -88,7 +86,6 @@ bool executeProgram(AvrState& state) {
     }
 
     uartPoll();
-    // ── Sync Timer0 flags → interrupt controller ──
     // Runs at the top so overflows/compare-matches that occurred while
     // I=0 (e.g. during ISR) are raised before the next user instruction.
     if (timer0OverflowPending()) {
@@ -147,7 +144,6 @@ bool executeProgram(AvrState& state) {
         timer0AckCompB();
         continue;
     }
-
     // ── Fetch ──
     if (state.pc + 1 >= AVR_FLASH_SIZE) {
       emuErrorPc(state.pc, "program counter out of flash bounds");
@@ -155,16 +151,14 @@ bool executeProgram(AvrState& state) {
     }
     const uint16_t instrPc = state.pc;
     emuSetFaultPc(instrPc);
-
     instruction = state.flash[state.pc] | (state.flash[state.pc + 1] << 8);
+    emuSetFaultInstr(instruction);
     state.pc += 2;
-
     Opcode op;
     if (!decodeInstruction(instruction, op)) {
       emuErrorPcInstr(instrPc, instruction, "unknown opcode (not in decoder table)");
       return false;
     }
-
     // ── Fetch second word for 32-bit instructions ──
     uint16_t extra = 0;
     if (op.words == 2) {
@@ -225,8 +219,9 @@ bool clearState(AvrState& state) {
   state.sp   = 0x08FF;
   state.cycle_count = 0;
   state.extra_cycles = 0;
-  // Zero all SRAM and EEPROM.
-  for (int i = 0; i < AVR_SRAM_SIZE;   ++i) state.sram[i]   = 0;
+  // SRAM is NOT zeroed here — firmware .data/.bss is loaded by
+  // loadFirmware and/or the CRT startup code.  Zeroing it would
+  // wipe initialized globals.
   for (int i = 0; i < AVR_EEPROM_SIZE; ++i) state.eeprom[i] = 0;
   return true;
 }
@@ -1510,12 +1505,9 @@ void executeRJMP(AvrState& state, OpsK02 ops) {
 //
 // @param ops.k — 22-bit word address
 void executeJMP(AvrState& state, OpsK22 ops) {
-    state.pc = (uint16_t)(ops.k * 2);                // convert word addr → byte addr
+    state.pc = (uint16_t)(ops.k * 2);
 }
-
 // IJMP — Indirect Jump
-// Unconditional jump to the address in Z (R31:R30).
-// PC ← Z (word address) * 2.
 //
 // SREG affected: None.
 void executeIJMP(AvrState& state) {
@@ -1546,10 +1538,6 @@ void executeCALL(AvrState& state, OpsK22 ops) {
     pushWord(state, state.pc);
     state.pc = (uint16_t)(ops.k * 2);
 }
-
-// ICALL — Indirect Call to Subroutine
-// Pushes the return address onto the stack, then jumps to the address in Z.
-// PUSH(PC); PC ← Z (word address) * 2.
 //
 // SREG affected: None.
 void executeICALL(AvrState& state) {
