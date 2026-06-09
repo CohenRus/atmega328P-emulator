@@ -1,3 +1,4 @@
+<!-- Project overview, build instructions, architecture notes, and status. -->
 # ATmega328P Emulator
 
 A cycle-accurate, instruction-complete emulator for the Microchip ATmega328P
@@ -20,7 +21,7 @@ UI (TUI) with live register inspection, disassembly, and peripheral views.
 | Timer0            | Done                       | Prescaler (/1, /8, /64, /256, /1024), CTC, overflow + compare-match interrupts. `delay()` and `millis()` work. |
 | Interrupts        | Partial                    | TIMER0_OVF, TIMER0_COMPA, TIMER0_COMPB dispatched. USART and external interrupts not yet wired. |
 | Cycle timing      | Done                       | Per-opcode cycle tracking + wall-clock sync (16 MHz nominal). `delay(1000)` takes 1 real second. |
-| Unit tests        | Done (107 tests, 192k assertions) | Instruction-level SREG verification, Timer0 prescaler/CTC tests. Catch2 framework. |
+| Unit tests        | Done (119 tests, 192k assertions) | Instruction-level SREG verification, loader validation, Timer0 prescaler/CTC tests. Catch2 framework. |
 | TUI               | Done                       | Tabbed interface: Serial, Registers, Disassembly. Pause, speed toggle, change highlighting. |
 | ADC               | Missing                    | No analog-to-digital converter peripheral. |
 | GPIO pin model    | Missing                    | PORTB/C/D registers exist but no pin-level tracking. |
@@ -103,9 +104,9 @@ Pressing `t` toggles the register and disassembly views between:
 cd build/native/tests && ./emulator_test
 ```
 
-107 test cases, 192k assertions.  Covers instruction-level SREG flag verification
-for all arithmetic, logic, branch, and data-transfer ops, plus Timer0 prescaler
-and CTC mode behavior.
+119 test cases, 192k assertions. Covers instruction-level SREG flag verification
+for arithmetic, logic, branch, and data-transfer ops, ELF loader validation,
+plus Timer0 prescaler and CTC mode behavior.
 
 ## Project Layout
 
@@ -169,17 +170,14 @@ All reads and writes route through `readDataByte()` / `writeDataByte()`:
 ### Timer0 & `delay()` / `millis()`
 
 Arduino's `delay(ms)` busy-loops reading a `millis()` counter incremented by the
-Timer0 overflow ISR.  Since compiled firmware links `__bad_interrupt` (an infinite
-loop) as the default handler, the emulator:
-
-1. Scans the ELF symbol table at load time for `timer0_millis`, records its SRAM address.
-2. On each Timer0 overflow, directly increments the 4-byte counter in SRAM —
-   bypassing the missing ISR.  The firmware's `millis()` reads the updated value.
+firmware's Timer0 overflow ISR. The emulator advances Timer0 from instruction
+cycle counts, raises `TIMER0_OVF`, and executes the compiled ISR through the
+normal interrupt controller.
 
 ### Wall-Clock Sync
 
 ```cpp
-auto target = wall_start + μs(cycle_count * 1'000'000 / 16'000'000);
+auto target = wall_start + μs(cycle_count * 50'000 / 16'000'000);
 if (target - now > 100μs) sleep_until(target);
 ```
 

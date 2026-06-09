@@ -36,10 +36,10 @@ static uint32_t pending = 0;
 // ===========================================================================
 
 // Convert an interrupt vector number to the corresponding byte address in flash.
-// Each vector slot is 2 bytes (typically an RJMP), so:
+// This emulator targets the 4-byte vector table emitted for ATmega328P firmware:
 //   Vector 1 (RESET)       -> 0x0000
-//   Vector 2 (INT0)        -> 0x0002
-//   Vector 17 (TIMER0_OVF) -> 0x0020
+//   Vector 2 (INT0)        -> 0x0004
+//   Vector 17 (TIMER0_OVF) -> 0x0040
 // @param vec — interrupt vector
 // @return flash byte address for the vector's entry in the interrupt table
 static uint16_t vectorAddr(InterruptVector vec) {
@@ -106,7 +106,7 @@ void interruptRaise(InterruptVector vec) {
 // at the new PC.
 //
 // @return true if an interrupt was serviced (PC changed), false otherwise
-bool interruptService() {
+bool interruptService(InterruptVector* serviced) {
     if (!g_state) return false;
 
     // Guard clause: interrupts globally disabled via SREG.I
@@ -147,14 +147,7 @@ bool interruptService() {
 
     // Redirect execution to the interrupt handler.
     g_state->pc = vecAddr;
+    if (serviced) *serviced = vec;
 
     return true;
-}
-
-// Clear a specific interrupt's pending flag (software clear).
-// Used by RETI to prevent immediate re-triggering.
-// @param vec — interrupt vector to clear
-void interruptClearFlag(InterruptVector vec) {
-    uint32_t mask = 1U << (static_cast<uint8_t>(vec) - 1);
-    pending &= ~mask;
 }

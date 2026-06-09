@@ -1,7 +1,8 @@
+/*
+ * disasm.h - Public AVR disassembly formatter.
+ * Produces human-readable assembly for one- and two-word instructions.
+ */
 #pragma once
-// Disassembly formatter for the ATmega328P emulator TUI.
-// Takes raw instruction words and produces human-readable assembly strings
-// like "ADD R16, R17" or "RJMP -4".
 
 #include <cstdint>
 #include <string>

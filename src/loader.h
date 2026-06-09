@@ -1,11 +1,10 @@
 /*
  * loader.h — ELF binary parser for AVR firmware loading.
  *
- * Defines the subset of ELF32 type definitions, struct layouts, and segment/section
+ * Defines the subset of ELF32 type definitions, struct layouts, and segment
  * constants needed to parse AVR GCC/avr-gcc output.  Provides loadFirmware() which
  * reads an ELF executable, extracts .text into emulator flash, sets up .data and
- * .bss initialization data, resolves the timer0_millis symbol address, and sets the
- * entry-point program counter.
+ * .bss initialization data, and sets the entry-point program counter.
  *
  * Key design decisions:
  * - Uses only the program header table (PHDR) for segment discovery, not section headers.
@@ -29,7 +28,6 @@
 #define Elf32_Sword uint32_t        // signed 32-bit word (same width; sign matters for relocations)
 #define Elf32_Addr uint32_t         // virtual / physical address
 #define Elf32_Off uint32_t          // file offset
-#define Elf32_Section uint16_t      // section index into section header table
 #define EI_NIDENT (16)              // size of e_ident[] identification area
 
 // ----- Program header segment types (p_type) -----
@@ -61,10 +59,6 @@
 #define PF_R            (1 << 2)    // readable
 #define PF_MASKOS       0x0ff00000  // OS-specific flag mask
 #define PF_MASKPROC     0xf0000000  // processor-specific flag mask
-
-// ----- Section header type constants -----
-#define SHT_SYMTAB  2               // symbol table section (Elf32_Sym[])
-#define SHT_STRTAB  3               // string table section (char[])
 
 // ----- ELF32 executable header (52 bytes) -----
 // The ELF identification block (e_ident) includes a 4-byte magic number
@@ -100,41 +94,14 @@ struct Elf32_Phdr {
   Elf32_Word p_align;               // alignment (0 or 1 = no alignment, else power of 2)
 };
 
-// ----- ELF32 section header (40 bytes) -----
-// Used for symbol-table lookup; not needed for basic segment loading.
-struct Elf32_Shdr {
-  Elf32_Word sh_name;               // index into section name string table
-  Elf32_Word sh_type;               // section type (SHT_SYMTAB, SHT_STRTAB, etc.)
-  Elf32_Word sh_flags;              // section attributes (SHF_WRITE, SHF_ALLOC, etc.)
-  Elf32_Addr sh_addr;               // virtual address at execution (0 if not loadable)
-  Elf32_Off  sh_offset;             // byte offset of section data in the file
-  Elf32_Word sh_size;               // section size in bytes
-  Elf32_Word sh_link;               // index of linked section (e.g. string table for symtab)
-  Elf32_Word sh_info;               // extra info (e.g. first local symbol index)
-  Elf32_Word sh_addralign;          // required alignment (0 or 1 = no alignment)
-  Elf32_Word sh_entsize;            // size of each entry if the section holds a table, else 0
-};
-
-// ----- ELF32 symbol table entry (16 bytes) -----
-// Each entry represents a symbol (function, variable, section, or file name).
-struct Elf32_Sym {
-  Elf32_Word    st_name;            // index into associated string table
-  Elf32_Addr    st_value;           // symbol address (data-space vaddr on AVR)
-  Elf32_Word    st_size;            // size in bytes (0 if unknown)
-  unsigned char st_info;            // upper 4 bits = binding, lower 4 bits = type
-  unsigned char st_other;           // visibility (STV_DEFAULT, STV_HIDDEN, STV_INTERNAL)
-  Elf32_Half    st_shndx;           // index of the section this symbol belongs to
-};
-
 // Load firmware from an ELF executable into emulator state.
 //
 // Performs a two-pass program header scan:
 //   1. Non-writable segments → flash memory (typically .text).
 //   2. Writable segments → flash + SRAM (.data init values, .bss zero-fill).
-// Then parses the section header table to resolve the timer0_millis symbol
-// address and sets the program counter to the ELF entry point.
+// Sets the program counter to the ELF entry point.
 //
-// @param state — mutable emulator state; flash, SRAM, PC, and timer0_millis_addr are written
+// @param state — mutable emulator state; flash, SRAM, and PC are written
 // @param fileName — path to the ELF binary file
 // @return true on success, false on any I/O error, malformed ELF, or out-of-bounds segment
-bool loadFirmware(AvrState& state, char* fileName);
+bool loadFirmware(AvrState& state, const char* fileName);

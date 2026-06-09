@@ -14,7 +14,6 @@
 
 #include "error.h"
 #include <cstdio>
-#include <cstring>
 #include <mutex>
 
 // Last error captured for UI consumption. Protected by g_error_mutex.
@@ -76,7 +75,7 @@ void emuErrorPcAddr(uint16_t pc, uint16_t addr, const char* access, const char* 
                detail, pc, g_faultInstr, access, addr);
 }
 void emuGetLastError(char* buf, size_t bufsize) {
+  if (bufsize == 0) return;
   std::lock_guard<std::mutex> lock(g_error_mutex);
-  std::strncpy(buf, g_emu_last_error, bufsize);
-  buf[bufsize - 1] = '\0';
+  std::snprintf(buf, bufsize, "%s", g_emu_last_error);
 }

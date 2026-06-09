@@ -1,10 +1,11 @@
+<!-- Repository conventions and common development commands. -->
 # REASONIX.md
 
 ## Stack
 - Language: C++20
 - Build system: CMake ≥ 3.20
 - WASM target: Emscripten
-- No third-party deps; custom ELF loader in `src/loader.cpp`
+- FTXUI provides the terminal interface; ELF loading is implemented locally.
 
 ## Layout
 - `src/` — all source + headers (main, decoder, executor, loader, memory, uart, state)

@@ -1,3 +1,4 @@
+// Serial timing fixture used to verify delay() and Timer0 overflow handling.
 int x;
 
 void setup() {
@@ -11,4 +12,3 @@ void loop() {
   x++;
   delay(1000);
 }
-

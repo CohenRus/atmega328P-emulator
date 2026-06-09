@@ -12,22 +12,26 @@ table  { font-size: 0.9em; }
 ## **ATmega328P Emulator**
 Building an AVR Emulator in C++20
 
-Cohen Russell
+
+Repository:
+`github.com/cohenrus/atmega328p-emulator`
 
 ---
 
 ### What?
-An emulator is software that pretends to be hardware — it reads real compiled firmware and executes it instruction-by-instruction, cycle-by-cycle.
+An emulator is software that pretends to be hardware.
 
-- **Target chip:** ATmega328P — the microcontroller inside every Arduino Uno R3
-- **16 MHz**, 8-bit AVR Harvard architecture
-- **32 KB** flash, **2 KB** SRAM, **131** distinct instructions
+Target chip: ATmega328P 
+- Microcontroller inside the Arduino Uno R3
+- 16 MHz, 8-bit AVR Harvard architecture
+- 32 KB flash, 2 KB SRAM, 131 distinct instructions
 
 ---
 
 ### Why?
 
 Part of a larger project to create a full online arduino IDE complete with editor, simulator and debugger.
+
 This emulator will be at the core of the simulator and debugger.
 
 ---
@@ -44,7 +48,7 @@ This emulator will be at the core of the simulator and debugger.
                    ▼
      ┌──────────────────────────────┐
      │       Execute Loop           │
-     │  executor.cpp                │
+     │       executor.cpp           │
      │  fetch → decode → execute    │
      └──────┬───────────────┬───────┘
             │               │
@@ -61,28 +65,28 @@ This emulator will be at the core of the simulator and debugger.
 
 The emulator holds the entire CPU in one struct
 
-| Component | Size | What it holds |
-|---|---|---|
-| **32 GP registers** (R0–R31) | 32 × 8-bit | Working data |
-| **Program Counter** | 16-bit | Byte address into flash |
-| **Stack Pointer** | 16-bit | Grows downward from top of SRAM |
-| **SREG** | 8-bit | Status register flags |
-| **Flash** | 32 KB | Program memory |
-| **SRAM** | 2304 B | Data space |
-| **EEPROM** | 1 KB | Non-volatile storage |
-| **Cycle count** | 64-bit | Total elapsed CPU cycles |
+| Component | What it holds |
+|---|---|
+| **32 registers** | Working data |
+| **Program Counter** | Byte address into flash |
+| **Stack Pointer**| Grows downward from top of SRAM |
+| **SREG**| Status register flags |
+| **Flash** | Program memory |
+| **SRAM** | Data space |
+| **EEPROM** | Non-volatile storage |
+| **Cycle count** | Total elapsed CPU cycles |
 
 ---
 
 ### Unified Memory Map
 
-The ATmega328P uses a **single 16-bit address space** for everything — registers, I/O, and SRAM all share the same bus.
+The ATmega328P uses a single 16-bit address space for everything — registers, I/O, and SRAM all share the same bus.
 
 ```
 Data Space (0x0000 → 0x08FF):
 ┌──────────────────┐
 │  32 GP Registers │ 0x0000
-│                  │  R0–R31 live here, not in a separate register file
+│                  │  R0–R31
 ├──────────────────┤
 │  64 I/O Registers│ 0x0020
 │                  │  Timer0, UART, PORTB/D, etc. — IN/OUT instructions
@@ -92,6 +96,7 @@ Data Space (0x0000 → 0x08FF):
 │  2048 B SRAM     │  Stack + .data + .bss + heap
 │                  │
 └──────────────────┘
+```
 
 ---
 
@@ -114,9 +119,6 @@ Data Space (0x0000 → 0x08FF):
 
 - Every AVR instruction is a 16-bit word (a few are 32-bit)
 - Decoding: mask the instruction word, compare against known patterns
-- **Table ordering matters:** narrower masks must appear first
-  - `LDD Y+q` (mask `0xD208`) before `LD Y` (mask `0xFE0F`)
-  - Otherwise `LDD` with displacement zero incorrectly matches `LD`
 - Linear scan: 131 entries, fixed stride, no branches in the mask test
 
 ---
@@ -124,7 +126,6 @@ Data Space (0x0000 → 0x08FF):
 ### SREG Flags
 
 - Every arithmetic/logic instruction computes up to 6 flags from its result
-- Getting flags wrong → branches go the wrong way
 
 | Flag | Name | Set when… |
 |---|---|---|
@@ -149,32 +150,16 @@ Data Space (0x0000 → 0x08FF):
 - 16 MHz → each cycle = 62.5 ns
 - After every instruction: compute expected wall-clock position, sleep if ahead
 
-- **No busy-waiting** — `sleep_until()` between instructions when ahead of schedule
-- **100µs sleep threshold** — avoids syscall overhead dominating short bursts
-- Trades a few µs of drift for orders of magnitude less CPU usage
-- Result: `delay(1000)` takes 1 second ± negligible drift, not 1 millisecond
-
 ---
 ### What's Not Yet Implemented
 
 **Major peripherals:**
 
 - **GPIO** — PORTB/C/D registers exist in the memory map but pin I/O is not wired; no `digitalWrite`, no `pinMode`
-- **Timer1** (16-bit) and **Timer2** (8-bit async) — registers not emulated, interrupts never fire
 - **ADC** — analog-to-digital converter not started
 - **SPI, I2C/TWI** — serial protocols not implemented
-
-**Deferred details:**
-
-- **Sleep modes** — SLEEP instruction is a NOP; SMCR register ignored
-- **Watchdog timer** — WDR instruction is a NOP
-- **Full SPM** — direct flash write works, but SPMCSR, page buffer, and RWW/NRWW sections are deferred
-- **EEPROM persistence** — array exists in state but isn't saved to disk
 - **PWM pin output** — Timer0 WGM modes compute flags correctly but don't drive output pins
-
+  
 ---
 
 # Questions?
-
-### Repository
-`github.com/cohenrus/atmega328p-emulator`

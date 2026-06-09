@@ -2,13 +2,13 @@
  * loader.cpp — ELF binary parsing and AVR firmware loading implementation.
  *
  * Opens a compiled AVR ELF executable and maps its contents into the emulator's
- * memory model.  The loading process has four phases:
+ * memory model. The loading process has four phases:
  *
  *   1. ELF header + program header table parsing.
  *   2. Pass 1 — non-writable (flash) segments (.text) loaded into state.flash[].
  *   3. Pass 2 — writable segments (.data init values into flash after .text,
  *      then copied to SRAM; .bss zeroed in SRAM).
- *   4. Symbol table lookup — resolves the timer0_millis address.
+ *   4. The ELF entry point becomes the initial program counter.
  *
  * AVR data-space virtual addresses (0x800000–0x80FFFF) are mapped to SRAM
  * offsets by subtracting 0x800000.  The ELF entry point becomes the initial PC.
@@ -17,12 +17,22 @@
 #include "loader.h"
 #include "error.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
 
 namespace {
+
+constexpr unsigned char ELFCLASS32 = 1;
+constexpr unsigned char ELFDATA2LSB = 1;
+constexpr unsigned char EV_CURRENT = 1;
+constexpr uint16_t EM_AVR = 83;
+
+bool rangeFits(uint64_t offset, uint64_t size, uint64_t limit) {
+  return offset <= limit && size <= limit - offset;
+}
 
 // Print a human-readable file I/O error to stderr, appending the system errno
 // string when set.
@@ -47,7 +57,7 @@ void reportElfReadFailure(const char* path, const char* what) {
 // The CRT copies from that flash address into SRAM at startup.
 //
 // See loader.h for the full contract.
-bool loadFirmware(AvrState& state, char* fileName) {
+bool loadFirmware(AvrState& state, const char* fileName) {
 
   // ---------- 1. Open file and parse ELF header ----------
   std::ifstream file(fileName, std::ios::binary);
@@ -57,6 +67,15 @@ bool loadFirmware(AvrState& state, char* fileName) {
     return false;
   }
 
+  file.seekg(0, std::ios::end);
+  const std::streamoff end = file.tellg();
+  if (end < static_cast<std::streamoff>(sizeof(Elf32_Ehdr))) {
+    emuErrorFile(fileName, "firmware is too small to contain an ELF header");
+    return false;
+  }
+  const uint64_t fileSize = static_cast<uint64_t>(end);
+  file.seekg(0, std::ios::beg);
+
   // Read the 52-byte ELF executable header at offset 0.
   Elf32_Ehdr header;
   if (!file.read(reinterpret_cast<char*>(&header), sizeof(header))) {
@@ -64,9 +83,26 @@ bool loadFirmware(AvrState& state, char* fileName) {
     return false;
   }
 
+  if (header.e_ident[0] != 0x7F || header.e_ident[1] != 'E' ||
+      header.e_ident[2] != 'L' || header.e_ident[3] != 'F' ||
+      header.e_ident[4] != ELFCLASS32 || header.e_ident[5] != ELFDATA2LSB ||
+      header.e_ident[6] != EV_CURRENT || header.e_machine != EM_AVR ||
+      header.e_version != EV_CURRENT || header.e_ehsize != sizeof(Elf32_Ehdr)) {
+    emuErrorFile(fileName, "not a supported 32-bit little-endian AVR ELF file");
+    return false;
+  }
+
   // Bail out if the file lacks program headers — we need at minimum one PT_LOAD.
   if (header.e_phoff == 0 || header.e_phnum == 0) {
     std::cerr << "error: ELF has no program headers ('" << fileName << "')\n";
+    return false;
+  }
+
+  if (header.e_phentsize != sizeof(Elf32_Phdr) ||
+      !rangeFits(header.e_phoff,
+                 static_cast<uint64_t>(header.e_phnum) * sizeof(Elf32_Phdr),
+                 fileSize)) {
+    emuErrorFile(fileName, "invalid ELF program header table");
     return false;
   }
 
@@ -84,6 +120,14 @@ bool loadFirmware(AvrState& state, char* fileName) {
       std::cerr << "error: failed to read ELF program header " << i
                 << " of " << static_cast<int>(header.e_phnum)
                 << " ('" << fileName << "')\n";
+      return false;
+    }
+  }
+
+  for (const auto& ph : phdrs) {
+    if (ph.p_type != PT_LOAD) continue;
+    if (ph.p_filesz > ph.p_memsz || !rangeFits(ph.p_offset, ph.p_filesz, fileSize)) {
+      emuErrorFile(fileName, "invalid loadable segment size or file range");
       return false;
     }
   }
@@ -112,6 +156,13 @@ bool loadFirmware(AvrState& state, char* fileName) {
       return false;
     }
 
+    if (!rangeFits(ph.p_vaddr, ph.p_filesz, sizeof(state.flash))) {
+      std::cerr << "error: text segment does not fit in flash (vaddr 0x"
+                << std::hex << ph.p_vaddr << " + " << std::dec
+                << ph.p_filesz << " bytes) ('" << fileName << "')\n";
+      return false;
+    }
+
     // Read segment bytes from the file at p_offset.
     file.seekg(static_cast<std::streamoff>(ph.p_offset), std::ios::beg);
     std::vector<uint8_t> data(ph.p_filesz);
@@ -122,19 +173,12 @@ bool loadFirmware(AvrState& state, char* fileName) {
       return false;
     }
 
-    // Bounds check — segment must fit within our 32 KiB flash array.
-    if (ph.p_vaddr + data.size() > sizeof(state.flash)) {
-      std::cerr << "error: text segment does not fit in flash (vaddr 0x"
-                << std::hex << ph.p_vaddr << " + " << std::dec
-                << data.size() << " bytes) ('" << fileName << "')\n";
-      return false;
-    }
-
     // Copy directly: flash byte address = ELF virtual address.
     memcpy(state.flash + ph.p_vaddr, data.data(), data.size());
     hasText = true;
-    totalFlash = ph.p_vaddr + data.size();
-    nextFlashAddr = static_cast<uint32_t>(ph.p_vaddr + data.size());
+    totalFlash = std::max(totalFlash, static_cast<size_t>(ph.p_vaddr + data.size()));
+    nextFlashAddr = std::max(nextFlashAddr,
+                             static_cast<uint32_t>(ph.p_vaddr + data.size()));
 
     std::cout << "loaded text: " << data.size() << " bytes at flash 0x"
               << std::hex << ph.p_vaddr << std::dec << '\n';
@@ -171,11 +215,26 @@ bool loadFirmware(AvrState& state, char* fileName) {
       return false;
     }
     uint16_t sramAddr = static_cast<uint16_t>(ph.p_vaddr - 0x800000);
+    if (!rangeFits(sramAddr, ph.p_memsz, sizeof(state.sram))) {
+      std::cerr << "error: writable segment does not fit in SRAM (sram 0x"
+                << std::hex << sramAddr << std::dec << " + " << ph.p_memsz
+                << " bytes) ('" << fileName << "')\n";
+      return false;
+    }
 
     if (ph.p_filesz > 0) {
-      // .data — segment has an initialized portion in the file.
-      // Read it into flash first (CRT entry point for LPM copy), then mirror
-      // into SRAM so the emulator can run without the CRT if needed.
+      uint32_t flashDest;
+      if (ph.p_paddr >= 0x800000) {
+        flashDest = nextFlashAddr;
+      } else {
+        flashDest = ph.p_paddr;
+      }
+      if (!rangeFits(flashDest, ph.p_filesz, sizeof(state.flash))) {
+        std::cerr << "error: .data initial values do not fit in flash ('"
+                  << fileName << "')\n";
+        return false;
+      }
+
       file.seekg(static_cast<std::streamoff>(ph.p_offset), std::ios::beg);
       std::vector<uint8_t> data(ph.p_filesz);
       if (!file.read(reinterpret_cast<char*>(data.data()), ph.p_filesz)) {
@@ -184,33 +243,10 @@ bool loadFirmware(AvrState& state, char* fileName) {
                   << " ('" << fileName << "')\n";
         return false;
       }
-
-      // Flash placement: use the segment's physical address (LMA) as the
-      // destination in flash so the CRT's __data_load_start matches.
-      // On AVR, p_paddr may equal p_vaddr (both 0x80xxxx); in that common
-      // case, fall back to nextFlashAddr which follows .text contiguously.
-      uint32_t flashDest;
-      if (ph.p_paddr >= 0x800000) {
-        flashDest = nextFlashAddr;
-      } else {
-        flashDest = ph.p_paddr;
-      }
-      if (flashDest + data.size() > sizeof(state.flash)) {
-        std::cerr << "error: .data initial values do not fit in flash ('"
-                  << fileName << "')\n";
-        return false;
-      }
       memcpy(state.flash + flashDest, data.data(), data.size());
 
       // SRAM placement: direct copy so the emulator sees initialized globals.
-      if (sramAddr + data.size() <= sizeof(state.sram)) {
-        memcpy(state.sram + sramAddr, data.data(), data.size());
-      } else {
-        std::cerr << "warning: .data segment at sram 0x"
-                  << std::hex << sramAddr << std::dec
-                  << " + " << data.size() << " bytes does not fit in SRAM ("
-                  << sizeof(state.sram) << " bytes) — global variables will be uninitialized\n";
-      }
+      memcpy(state.sram + sramAddr, data.data(), data.size());
       std::cout << "loaded .data: " << data.size() << " bytes at flash 0x"
                 << std::hex << flashDest << " → sram 0x"
                 << sramAddr << std::dec << '\n';
@@ -220,112 +256,21 @@ bool loadFirmware(AvrState& state, char* fileName) {
     if (ph.p_memsz > ph.p_filesz) {
       // .bss — the portion of the segment beyond p_filesz is uninitialized
       // and must be zeroed in SRAM.  It has no flash footprint.
-      uint16_t bssStart = sramAddr + ph.p_filesz;
-      uint16_t bssSize  = static_cast<uint16_t>(ph.p_memsz - ph.p_filesz);
-      if (bssStart + bssSize <= sizeof(state.sram)) {
-        memset(state.sram + bssStart, 0, bssSize);
-      } else {
-        std::cerr << "warning: .bss segment at sram 0x"
-                  << std::hex << bssStart << std::dec
-                  << " + " << bssSize << " bytes does not fit in SRAM\n";
-      }
+      uint32_t bssStart = sramAddr + ph.p_filesz;
+      uint32_t bssSize  = ph.p_memsz - ph.p_filesz;
+      memset(state.sram + bssStart, 0, bssSize);
       std::cout << "zeroed .bss: " << bssSize << " bytes at sram 0x"
                 << std::hex << bssStart << std::dec << '\n';
     }
   }
 
-  // ---------- 4. Symbol table lookup: find timer0_millis ----------
-  // The firmware declares an extern variable timer0_millis that the emulator
-  // updates on each Timer0 overflow.  We need its SRAM address so we know
-  // where to write.  This symbol is resolved by scanning the ELF symbol table.
-  //
-  // Required: the ELF must have a section header table (not stripped) with a
-  // .symtab section and a .strtab section containing symbol name strings.
-  state.timer0_millis_addr = 0;
-  if (header.e_shoff != 0 && header.e_shnum > 0) {
-    // Read all section headers.
-    file.seekg(static_cast<std::streamoff>(header.e_shoff), std::ios::beg);
-    std::vector<Elf32_Shdr> shdrs(header.e_shnum);
-    file.read(reinterpret_cast<char*>(shdrs.data()),
-              header.e_shnum * sizeof(Elf32_Shdr));
-
-    // Read the section name string table (.shstrtab) so we can match section
-    // header names like ".strtab" and ".symtab".
-    Elf32_Shdr& shstrtab = shdrs[header.e_shstrndx];
-    std::vector<char> shstr(shstrtab.sh_size);
-    file.seekg(static_cast<std::streamoff>(shstrtab.sh_offset), std::ios::beg);
-    file.read(shstr.data(), shstrtab.sh_size);
-
-    // Scan section headers to locate .symtab and .strtab.
-    const Elf32_Shdr* symtab = nullptr;
-    const char* strtabData = nullptr;
-    uint32_t strtabSize = 0;
-    for (auto& sh : shdrs) {
-      if (sh.sh_type == SHT_SYMTAB) {
-        symtab = &sh;
-      }
-      if (sh.sh_type == SHT_STRTAB &&
-          strcmp(shstr.data() + sh.sh_name, ".strtab") == 0) {
-        strtabData = new char[sh.sh_size];  // temporary heap buffer for string table
-        strtabSize = sh.sh_size;
-        file.seekg(static_cast<std::streamoff>(sh.sh_offset), std::ios::beg);
-        file.read(const_cast<char*>(strtabData), sh.sh_size);
-      }
-    }
-
-    // If both tables are present, iterate symbols looking for "timer0_millis".
-    if (symtab && strtabData) {
-      size_t count = symtab->sh_size / sizeof(Elf32_Sym);
-      file.seekg(static_cast<std::streamoff>(symtab->sh_offset), std::ios::beg);
-      std::vector<Elf32_Sym> syms(count);
-      file.read(reinterpret_cast<char*>(syms.data()), symtab->sh_size);
-      uint32_t dataLoadStart = 0;
-      uint32_t dataStart = 0;
-      for (auto& sym : syms) {
-        if (sym.st_name >= strtabSize) continue;
-        const char* name = strtabData + sym.st_name;
-        if (strcmp(name, "timer0_millis") == 0) {
-          if (sym.st_value >= 0x800000 && sym.st_value <= 0x80FFFF) {
-            state.timer0_millis_addr =
-                static_cast<uint16_t>(sym.st_value - 0x800000);
-          }
-        }
-        else if (strcmp(name, "__data_load_start") == 0) {
-          dataLoadStart = sym.st_value;
-        }
-        else if (strcmp(name, "__data_start") == 0) {
-          dataStart = sym.st_value;
-        }
-        else if (strcmp(name, "__malloc_heap_start") == 0 ||
-                 strcmp(name, "__heap_start") == 0) {
-          if (sym.st_value >= 0x800000 && sym.st_value <= 0x80FFFF) {
-            std::cout << "heap start: 0x" << std::hex
-                      << (sym.st_value - 0x800000) << std::dec << '\n';
-          }
-        }
-      }
-      if (dataLoadStart != 0 || dataStart != 0) {
-        std::cout << "CRT .data info: __data_load_start=0x"
-                  << std::hex << dataLoadStart
-                  << " __data_start=0x" << dataStart << std::dec << '\n';
-      }
-    }
-    delete[] strtabData;  // free the heap-allocated string table copy
-  }
-  if (state.timer0_millis_addr != 0) {
-    std::cout << "found timer0_millis at sram 0x"
-              << std::hex << state.timer0_millis_addr << std::dec << '\n';
-  }
-
-  // ---------- 5. Set entry point ----------
-  // The ELF e_entry field is a word address on AVR (instruction words are
-  // 2 bytes each).  Our PC is a byte address, so cast directly.
-  state.pc = static_cast<uint16_t>(header.e_entry);
+  // ---------- 4. Set entry point ----------
   if (header.e_entry >= AVR_FLASH_SIZE) {
     std::cerr << "error: ELF entry point 0x" << std::hex << header.e_entry
               << std::dec << " is outside flash ('" << fileName << "')\n";
     return false;
   }
+  state.pc = static_cast<uint16_t>(header.e_entry);
 
   std::cout << "entry point: 0x" << std::hex << header.e_entry
             << std::dec << ", total flash used: " << totalFlash << " bytes\n";

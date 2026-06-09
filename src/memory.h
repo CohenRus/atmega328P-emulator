@@ -1,3 +1,8 @@
+/*
+ * memory.h - Unified ATmega328P data-space and stack access interface.
+ * Routes register, I/O, peripheral, SRAM, and flash operations through the
+ * emulator's bounds-checked memory model.
+ */
 #pragma once
 
 #include <cstdint>
@@ -68,9 +73,8 @@ void  clearIOBit(AvrState& state, uint8_t ioAddr, uint8_t bit);
 
 // ── Stack ────────────────────────────────────────────────────────────────────
 //
-// SP points at the last used stack address. PUSH writes at SP, then decrements;
-// POP increments SP, then reads. Stack lives in SRAM (data-space
-// addresses 0x0100–0x08FF).
+// PUSH writes at SP, then decrements it. POP increments SP, then reads.
+// Stack lives at data-space addresses 0x0100-0x08FF.
 
 void     pushByte(AvrState& state, uint8_t value);
 uint8_t  popByte(AvrState& state);

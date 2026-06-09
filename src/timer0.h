@@ -1,8 +1,10 @@
+/*
+ * timer0.h - ATmega328P Timer/Counter0 peripheral interface.
+ * Exposes register routing, cycle advancement, and interrupt acknowledgement.
+ */
 #pragma once
 
 #include <cstdint>
-
-struct AvrState;
 
 // ===========================================================================
 // Timer0 — 8-bit timer/counter with prescaler.
@@ -12,8 +14,7 @@ struct AvrState;
 // and sets the corresponding flag bits in TIFR0.
 //
 // Call timer0Tick() once per emulated instruction, passing the instruction's
-// cycle count.  timer0Read/timer0Write route I/O register accesses.
-// timer0SetState must be called once before any other functions.
+// cycle count. timer0Read/timer0Write route standard and extended I/O accesses.
 // ===========================================================================
 
 #define T0_TCCR0A  0x44
@@ -40,11 +41,13 @@ struct AvrState;
 #define T0_WGM_CTC     2
 #define T0_WGM_FAST_PWM 3
 
-void timer0SetState(AvrState* state);
+// Restore power-on register values and clear the prescaler accumulator.
 void timer0Reset();
+
+// Advance Timer0 by the supplied number of CPU cycles.
 void timer0Tick(uint16_t cycles);
 
-// Returns true if ioAddr falls in the Timer0 register range.
+// Read or write a Timer0 I/O offset. Returns false for unrelated addresses.
 bool timer0Read (uint8_t ioAddr, uint8_t* out);
 bool timer0Write(uint8_t ioAddr, uint8_t value);
 

@@ -1,3 +1,4 @@
+// Presentation example that prints an incrementing counter once per second.
 int x;
 
 void setup() {
@@ -11,4 +12,3 @@ void loop() {
   x++;
   delay(1000);
 }
-

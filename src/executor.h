@@ -28,6 +28,8 @@
 // @param state — emulator runtime state (modified in place each cycle)
 bool executeProgram(AvrState& state);
 
+bool getEmulatorSnapshot(AvrState& snapshot);
+
 // Resets the emulator to power-on state: all GP registers → 0, PC → 0,
 // SREG → 0, SP → RAMEND (0x08FF), all SRAM and EEPROM → 0.
 //

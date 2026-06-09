@@ -1,4 +1,5 @@
-# Pass this file via -DCMAKE_TOOLCHAIN_FILE when building for WASM:
+# Emscripten toolchain definition for WebAssembly builds.
+# Pass this file via -DCMAKE_TOOLCHAIN_FILE:
 #   cmake -B build/wasm -DCMAKE_TOOLCHAIN_FILE=cmake/Emscripten.cmake
 #
 # Requires EMSDK env var to point to your emsdk installation.

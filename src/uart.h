@@ -1,3 +1,7 @@
+/*
+ * uart.h - ATmega328P UART peripheral and host I/O bridge.
+ * Supports non-blocking terminal I/O and thread-safe TUI byte injection.
+ */
 #pragma once
 #include <cstdint>
 #include <string>
@@ -8,7 +12,7 @@
 //
 // Two modes:
 //   Headless (default): TX → stdout, RX ← stdin (non-blocking poll)
-//   TUI:               TX → internal buffer (retrieve via uartGetTx),
+//   TUI:               TX → internal buffer (retrieve via uartPopTx),
 //                       RX ← injected bytes (via uartInjectRx)
 //
 // All functions operate on I/O addresses (0x00–0x3F), NOT data-space addresses.
@@ -38,7 +42,7 @@ void uartInjectRx(uint8_t byte);
 // Used by the render loop to show whether input has been consumed.
 bool uartHasRxPending();
 
-// ---- Headless API (unchanged) ----
+// ---- Peripheral lifecycle ----
 
 // Call once at emulator startup.  Puts stdin in non-blocking mode so
 // uartPoll() never blocks.  Returns true on success.

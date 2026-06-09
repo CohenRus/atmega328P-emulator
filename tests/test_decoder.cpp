@@ -1,3 +1,9 @@
+/*
+ * test_decoder.cpp - Exhaustive and targeted tests for AVR opcode decoding.
+ * Verifies opcode-table coverage and operand extraction across instruction
+ * formats.
+ */
+
 #include "catch_amalgamated.hpp"
 #include "decoder.h"
 #include "state.h"
@@ -6,18 +12,11 @@
 #include <cstdint>
 #include <set>
 
-// Standard AVR opcodes that are documented as "unused/undefined" and should
-// NOT decode. These are bit patterns that intentionally have no instruction.
-//
-// 0xFFFF is the most common unused pattern (1111 1111 1111 1111).
-// Other truly unused patterns come from the gaps between defined opcodes.
-//
-// We skip these in the exhaustive scan so we don't flag them as bugs.
+// Keep the exclusion hook explicit so documented undefined encodings can be
+// added without weakening the exhaustive scan.
 static bool isKnownUnused(uint16_t instr) {
-    // Patterns with all opcode bits set are conventionally unused
-    // but we only mark the truly undefined ones.
     (void)instr;
-    return false; // Initially, flag all failures — fix as we identify legitimate gaps
+    return false;
 }
 
 TEST_CASE("Decoder: exhaustive 16-bit opcode scan", "[decoder]") {

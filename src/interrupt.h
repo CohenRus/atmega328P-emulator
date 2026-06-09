@@ -1,3 +1,7 @@
+/*
+ * interrupt.h - ATmega328P interrupt controller interface.
+ * Defines supported vectors and the pending-interrupt dispatch API.
+ */
 #pragma once
 
 #include <cstdint>
@@ -5,12 +9,11 @@
 struct AvrState;
 
 // ===========================================================================
-// Minimal Interrupt Controller for ATmega328P.
+// Interrupt controller for the currently emulated ATmega328P peripherals.
 //
 // Interrupt vector addresses (byte addresses into flash — matching our PC).
-// On real hardware, the vector table lives at the start of flash.  Each
-// entry is typically an RJMP (2 bytes), so vector N is at byte address
-// (N - 1) * 2.
+// This emulator uses the 4-byte vector entries emitted for ATmega328P
+// firmware, so vector N starts at byte address (N - 1) * 4.
 //
 // When an interrupt fires, the CPU:
 //   1. Pushes current PC onto the stack
@@ -19,8 +22,7 @@ struct AvrState;
 //
 // RETI (executed by firmware's ISR epilogue) pops PC and sets I.
 //
-// For v1, only TIMER0_OVF is wired.  Other vectors are defined here for
-// forward compatibility but are never raised.
+// Timer0 and USART vectors are wired by the executor and UART peripheral.
 // ===========================================================================
 
 // ATmega328P interrupt vector numbers (datasheet §12.1)
@@ -47,16 +49,16 @@ enum class InterruptVector : uint8_t {
     USART_TX       = 21,   // USART Tx Complete
 };
 
+// Bind the controller to the active CPU state. The state must outlive use of
+// the controller.
 void interruptSetState(AvrState* state);
+
+// Drop all pending interrupt requests.
 void interruptReset();
 
 // Raise an interrupt.  Idempotent — setting the same vector twice is a no-op.
 void interruptRaise(InterruptVector vec);
 
-// Call after every instruction.  Returns true if an interrupt was dispatched
-// (PC was changed, so the current instruction cycle is done).
-bool interruptService();
-
-// Called inside RETI — clears the global flag that prevents the same
-// interrupt from re-firing immediately.
-void interruptClearFlag(InterruptVector vec);
+// Dispatch the highest-priority pending vector when SREG.I is set. The
+// optional output identifies which peripheral flag the caller should clear.
+bool interruptService(InterruptVector* serviced = nullptr);

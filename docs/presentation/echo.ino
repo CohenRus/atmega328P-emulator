@@ -1,3 +1,4 @@
+// Presentation example that reads a newline-terminated serial message and echoes it.
 void setup() {
   Serial.begin(9600);
   Serial.println("ready — type something:");
@@ -9,4 +10,3 @@ void loop() {
     Serial.println("you said: " + line);
   }
 }
-

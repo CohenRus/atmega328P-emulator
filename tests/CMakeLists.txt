@@ -1,9 +1,11 @@
+# Test target for decoder, instruction, loader, peripheral, and integration tests.
 cmake_minimum_required(VERSION 3.20)
 
 add_executable(emulator_test
     catch2/catch_amalgamated.cpp
     test_decoder.cpp
     test_instructions.cpp
+    test_loader.cpp
     test_timer0.cpp
     ../src/decoder.cpp
     ../src/disasm.cpp

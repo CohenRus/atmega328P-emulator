@@ -1,9 +1,14 @@
+/*
+ * disasm.cpp - AVR instruction formatter used by the TUI disassembly view.
+ * Converts decoded operands into assembly text and resolves relative targets
+ * from the instruction's byte-addressed program counter.
+ */
+
 #include "disasm.h"
 #include "decoder.h"
 
 #include <cstdio>
 
-// Helper: format a hex address
 static std::string hex16(uint16_t v) {
   char buf[16];
   snprintf(buf, sizeof(buf), "0x%04X", v);

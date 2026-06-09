@@ -20,7 +20,6 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include "decoder.h"
 #include "disasm.h"
@@ -125,11 +124,10 @@ int runTui(const std::string& elfPath) {
   uartSetTuiMode();
   AvrState state{};
   clearState(state);
-  std::vector<char> pathBuf(elfPath.begin(), elfPath.end());
-  pathBuf.push_back('\0');
-  if (!loadFirmware(state, pathBuf.data())) {
+  if (!loadFirmware(state, elfPath.c_str())) {
     return 2;
   }
+  AvrState displayState = state;
 
   // Redirect stderr to a debug file so we can diagnose emulator errors
   // without corrupting the FTXUI display.
@@ -180,12 +178,12 @@ int runTui(const std::string& elfPath) {
   bool     regChanged[32] = {};
   uint16_t snapPc = 0, snapSp = 0;
   uint8_t  snapSreg = 0;
+  uint64_t snapCycles = 0;
   bool     snapEver = false;
   auto     lastRegSnap = std::chrono::steady_clock::now();
 
   // Cached disassembly lines + the PC they were decoded for.
   Elements cachedDisasmLines;
-  uint16_t cachedDisasmPc = 0xFFFF;
   auto     lastDisasmSnap = std::chrono::steady_clock::now();
 
   // 't' toggles between slow (rate-limited, ~5 fps) and fast (real-time) views.
@@ -218,15 +216,17 @@ int runTui(const std::string& elfPath) {
     bool paused = g_emu_pause.load();
     if (!snapEver || !viewSlow ||
         (now - lastRegSnap > std::chrono::milliseconds(200)) || paused) {
+      getEmulatorSnapshot(displayState);
       // Detect changed registers.
       for (int i = 0; i < 32; i++) {
-        regChanged[i] = snapEver && (state.r[i] != regSnapshot[i]);
+        regChanged[i] = snapEver && (displayState.r[i] != regSnapshot[i]);
       }
       // Take snapshot.
-      memcpy(regSnapshot, state.r, 32);
-      snapPc = state.pc;
-      snapSp = state.sp;
-      snapSreg = state.sreg;
+      memcpy(regSnapshot, displayState.r, 32);
+      snapPc = displayState.pc;
+      snapSp = displayState.sp;
+      snapSreg = displayState.sreg;
+      snapCycles = displayState.cycle_count;
       lastRegSnap = now;
       snapEver = true;
     }
@@ -264,7 +264,7 @@ int runTui(const std::string& elfPath) {
              "PC: 0x%s  SP: 0x%s  Cycles: %llu",
              hex4(snapPc).c_str(),
              hex4(snapSp).c_str(),
-             (unsigned long long)state.cycle_count);
+             (unsigned long long)snapCycles);
 
     return vbox({
       text(" Registers ") | bold | color(Color::Cyan),
@@ -282,12 +282,11 @@ int runTui(const std::string& elfPath) {
   auto disasmTab = Renderer([&] {
     auto now = std::chrono::steady_clock::now();
     bool paused = g_emu_pause.load();
-    uint16_t pc = state.pc;
-
     // Rate-limit in slow mode: re-decode every 200ms (or every frame when paused).
     if (!viewSlow || paused ||
         (now - lastDisasmSnap > std::chrono::milliseconds(200))) {
-      cachedDisasmPc = pc;
+      getEmulatorSnapshot(displayState);
+      uint16_t pc = displayState.pc;
       lastDisasmSnap = now;
       cachedDisasmLines.clear();
 
@@ -295,7 +294,8 @@ int runTui(const std::string& elfPath) {
       start &= ~1u;
       uint16_t scan = start;
       while (scan < pc + 30 && scan + 1 < AVR_FLASH_SIZE) {
-        uint16_t w = state.flash[scan] | ((uint16_t)state.flash[scan + 1] << 8);
+        uint16_t w = displayState.flash[scan] |
+                     ((uint16_t)displayState.flash[scan + 1] << 8);
         uint16_t extra = 0;
         uint8_t words = 1;
         Opcode op;
@@ -303,7 +303,8 @@ int runTui(const std::string& elfPath) {
         if (decodeInstruction(w, op)) {
           words = op.words;
           if (words == 2 && scan + 3 < AVR_FLASH_SIZE) {
-            extra = state.flash[scan + 2] | ((uint16_t)state.flash[scan + 3] << 8);
+            extra = displayState.flash[scan + 2] |
+                    ((uint16_t)displayState.flash[scan + 3] << 8);
           }
           disasm = disassemble(w, extra, scan);
         } else {

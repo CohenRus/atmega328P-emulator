@@ -18,14 +18,35 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 // ATmega328P nominal clock: 16 MHz
 #define AVR_CPU_HZ 16000000ULL
+#define WALL_CLOCK_US_PER_SECOND 50000ULL
 
 // Cooperative stop flag.  Set to true from any thread to request the
 // execution loop to exit cleanly at the next iteration boundary.
 std::atomic<bool> g_emu_stop(false);
 std::atomic<bool> g_emu_pause(false);
+
+namespace {
+std::mutex g_snapshot_mutex;
+AvrState g_snapshot{};
+bool g_snapshot_ready = false;
+
+void publishSnapshot(const AvrState& state) {
+  std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+  g_snapshot = state;
+  g_snapshot_ready = true;
+}
+} // namespace
+
+bool getEmulatorSnapshot(AvrState& snapshot) {
+  std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+  if (!g_snapshot_ready) return false;
+  snapshot = g_snapshot;
+  return true;
+}
 // ---------------------------------------------------------------------------
 #define SREG_C  0  // Carry
 #define SREG_Z  1  // Zero
@@ -60,10 +81,11 @@ bool executeProgram(AvrState& state) {
   // State (registers, PC, SP, SRAM) is already initialized by the caller.
   // Only peripheral state needs resetting here.
   uartInit();
-  timer0SetState(&state);
   timer0Reset();
   interruptSetState(&state);
   interruptReset();
+  publishSnapshot(state);
+  uint64_t next_snapshot_cycle = 160000;
 
   // Wall-clock anchor for real-time synchronization.
   auto wall_start = std::chrono::steady_clock::now();
@@ -72,6 +94,7 @@ bool executeProgram(AvrState& state) {
   while (true) {
     // ── Cooperative stop check ──
     if (g_emu_stop.load(std::memory_order_relaxed)) {
+        publishSnapshot(state);
         return true;  // clean exit requested by TUI
     }
 
@@ -96,13 +119,14 @@ bool executeProgram(AvrState& state) {
     }
 
     // ── Service pending interrupts ──
-    if (interruptService()) {
-        // Hardware auto-clears the TIFR flag on dispatch.
-        // Acknowledge all Timer0 flags — the one that fired will be cleared;
-        // others are unaffected by the &= ~mask.
-        timer0AckOverflow();
-        timer0AckCompA();
-        timer0AckCompB();
+    InterruptVector serviced;
+    if (interruptService(&serviced)) {
+        switch (serviced) {
+          case InterruptVector::TIMER0_OVF:   timer0AckOverflow(); break;
+          case InterruptVector::TIMER0_COMPA: timer0AckCompA();    break;
+          case InterruptVector::TIMER0_COMPB: timer0AckCompB();    break;
+          default: break;
+        }
         continue;
     }
     // ── Fetch ──
@@ -145,12 +169,16 @@ bool executeProgram(AvrState& state) {
     uint16_t total_cycles = op.cycles_min + state.extra_cycles;
     state.cycle_count += total_cycles;
     timer0Tick(total_cycles);
+    if (state.cycle_count >= next_snapshot_cycle) {
+      publishSnapshot(state);
+      next_snapshot_cycle = state.cycle_count + 160000;
+    }
 
     // ── Wall-clock synchronization ──
     // Sleep only when more than 100 µs ahead to balance precision vs syscall cost.
     {
         auto target_wall = wall_start + std::chrono::microseconds(
-            state.cycle_count * 1000000ULL / AVR_CPU_HZ);
+            state.cycle_count * WALL_CLOCK_US_PER_SECOND / AVR_CPU_HZ);
         auto now = std::chrono::steady_clock::now();
         auto ahead = target_wall - now;
         if (ahead > std::chrono::microseconds(100)) {
@@ -374,7 +402,7 @@ bool executeInstruction(AvrState& state, Opcode& op, uint16_t instr, uint16_t se
 // Used for multi-byte addition chains (ADD for LSB, ADC for subsequent bytes).
 //
 // SREG affected: H (half-carry from bit 3), V (two's complement overflow),
-//     N (result negative), Z (result zero), C (carry from bit 7),
+//     N (result negative), Z (previous Z and result zero), C (carry from bit 7),
 //     S (N ⊕ V).  T and I are preserved.
 //
 // @param ops.d — destination register (Rd); also the first source operand
@@ -391,7 +419,7 @@ void executeADC(AvrState& state, OpsRdRr ops) {
     // V: overflow — sign of operands differs from sign of result.
     bool v = ((rd ^ result8) & (rr ^ result8) & 0x80) != 0;
     bool n = (result8 & 0x80) != 0;
-    bool z = result8 == 0;
+    bool z = getFlag(state, SregBit::Z) && result8 == 0;
     bool c = result16 > 0xFF;                         // carry-out from bit 7
     bool s = n ^ v;
 
@@ -405,7 +433,7 @@ void executeADC(AvrState& state, OpsRdRr ops) {
 // Adds two registers without the Carry flag.  Rd ← Rd + Rr.
 // Also used as LSL (Logical Shift Left): LSL Rd,N = ADD Rd,Rd repeated N times.
 //
-// SREG affected: H, V, N, Z, C, S.  T and I are preserved.
+// SREG affected: H, V, N, Z, C, S. T and I are preserved.
 //
 // @param ops.d — destination register (also first source)
 // @param ops.r — source register (second source)
@@ -442,12 +470,12 @@ void executeADIW(AvrState& state, OpsRd06K6 ops) {
     uint16_t word = ((uint16_t)hi << 8) | lo;
     uint16_t result16 = word + ops.k;
 
-    // V: set if the high byte's sign bit changed from 1 to 0 (positive overflow).
-    bool v = (hi & 0x80) && !(result16 & 0x8000);
+    const bool oldN = (word & 0x8000) != 0;
+    const bool newN = (result16 & 0x8000) != 0;
+    bool v = !oldN && newN;
     bool n = (result16 & 0x8000) != 0;
     bool z = result16 == 0;
-    // C: set if there was no carry out of bit 15 (i.e., result MSB is 0 but source MSB was 1).
-    bool c = !(result16 & 0x8000) && (hi & 0x80);
+    bool c = oldN && !newN;
     bool s = n ^ v;
 
     state.r[ops.d]     = (uint8_t)(result16 & 0xFF);
@@ -679,12 +707,12 @@ void executeSBIW(AvrState& state, OpsRd06K6 ops) {
     uint16_t word = ((uint16_t)hi << 8) | lo;
     uint16_t result16 = word - ops.k;
 
-    // V: set if sign bit changed from 0 to 1 (underflow to negative).
-    bool v = (hi & 0x80) && (result16 & 0x8000);
+    const bool oldN = (word & 0x8000) != 0;
+    const bool newN = (result16 & 0x8000) != 0;
+    bool v = oldN && !newN;
     bool n = (result16 & 0x8000) != 0;
     bool z = result16 == 0;
-    // C: set if there was a borrow (result MSB became 1 when source MSB was 0).
-    bool c = (result16 & 0x8000) && (hi & 0x80);
+    bool c = !oldN && newN;
     bool s = n ^ v;
 
     state.r[ops.d]     = (uint8_t)(result16 & 0xFF);
@@ -697,7 +725,8 @@ void executeSBIW(AvrState& state, OpsRd06K6 ops) {
 // Subtracts a register and the Carry flag from a register.  Rd ← Rd - Rr - C.
 // Used for multi-byte subtraction chains (SUB for LSB, SBC for subsequent bytes).
 //
-// SREG affected: H, V, N, Z, C, S.  T and I are preserved.
+// SREG affected: H, V, N, C, S. Z remains set only when the previous Z and
+// current result are both zero. T and I are preserved.
 //
 // @param ops.d — destination register (minuend)
 // @param ops.r — source register (subtrahend)
@@ -713,7 +742,7 @@ void executeSBC(AvrState& state, OpsRdRr ops) {
     // V: two's complement overflow on subtraction.
     bool v = ((rd ^ rr) & (rd ^ result8) & 0x80) != 0;
     bool n = (result8 & 0x80) != 0;
-    bool z = result8 == 0;
+    bool z = getFlag(state, SregBit::Z) && result8 == 0;
     // C: set when result underflows (borrow from bit 7).
     bool c = result16 > 0xFF;
     bool s = n ^ v;
@@ -727,7 +756,8 @@ void executeSBC(AvrState& state, OpsRdRr ops) {
 // Subtracts an 8-bit constant and the Carry flag from a register.
 // Rd ← Rd - K - C.  Rd must be R16–R31.
 //
-// SREG affected: H, V, N, Z, C, S.  T and I are preserved.
+// SREG affected: H, V, N, C, S. Z remains set only when the previous Z and
+// current result are both zero. T and I are preserved.
 //
 // @param ops.d — destination register (R16–R31)
 // @param ops.k — 8-bit unsigned immediate
@@ -740,7 +770,7 @@ void executeSBCI(AvrState& state, OpsRdK8 ops) {
     bool h = ((rd & 0x0F) < ((ops.k & 0x0F) + ci));
     bool v = ((rd ^ ops.k) & (rd ^ result8) & 0x80) != 0;
     bool n = (result8 & 0x80) != 0;
-    bool z = result8 == 0;
+    bool z = getFlag(state, SregBit::Z) && result8 == 0;
     bool c = result16 > 0xFF;
     bool s = n ^ v;
 

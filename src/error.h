@@ -5,7 +5,7 @@
  * Variants attach optional context: file path, program counter,
  * instruction word, or faulting address.
  *
- * A thread-local fault-PC can be set before each instruction so that
+ * A fault PC can be set before each instruction so that
  * memory/stack helpers can report the exact instruction that triggered
  * a fault without threading the PC through every call.
  */

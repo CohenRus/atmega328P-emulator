@@ -1,3 +1,9 @@
+/*
+ * test_instructions.cpp - Unit tests for AVR instruction execution.
+ * Exercises register results, SREG behavior, stack semantics, and edge cases
+ * by calling decoded instruction handlers directly.
+ */
+
 #include "catch_amalgamated.hpp"
 #include "decoder.h"
 #include "state.h"
@@ -62,6 +68,15 @@ TEST_CASE("ADC with carry in", "[instructions][arithmetic][Rd_Rr]") {
     REQUIRE_FALSE(getFlag(s, SregBit::C));
 }
 
+TEST_CASE("ADC preserves cleared Z across a zero high byte",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    clearFlag(s, SregBit::Z);
+    executeADC(s, {3, 7});
+    REQUIRE(s.r[3] == 0);
+    REQUIRE_FALSE(getFlag(s, SregBit::Z));
+}
+
 TEST_CASE("SUB 30-10", "[instructions][arithmetic][Rd_Rr]") {
     auto s = freshState();
     s.r[5] = 30;
@@ -92,6 +107,15 @@ TEST_CASE("SBC with borrow in", "[instructions][arithmetic][Rd_Rr]") {
     executeSBC(s, ops);
     REQUIRE(s.r[3] == 6);
     REQUIRE_FALSE(getFlag(s, SregBit::C));
+}
+
+TEST_CASE("SBC preserves cleared Z across a zero high byte",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    clearFlag(s, SregBit::Z);
+    executeSBC(s, {3, 7});
+    REQUIRE(s.r[3] == 0);
+    REQUIRE_FALSE(getFlag(s, SregBit::Z));
 }
 
 TEST_CASE("AND 0xF0 & 0x0F", "[instructions][logic][Rd_Rr]") {
@@ -206,6 +230,15 @@ TEST_CASE("SBCI with carry in", "[instructions][arithmetic][Rd_K8]") {
     OpsRdK8 ops = {20, 3};
     executeSBCI(s, ops);
     REQUIRE(s.r[20] == 6);
+}
+
+TEST_CASE("SBCI preserves cleared Z across a zero high byte",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    clearFlag(s, SregBit::Z);
+    executeSBCI(s, {20, 0});
+    REQUIRE(s.r[20] == 0);
+    REQUIRE_FALSE(getFlag(s, SregBit::Z));
 }
 
 TEST_CASE("CPI equal → Z flag", "[instructions][compare][Rd_K8]") {
@@ -402,6 +435,52 @@ TEST_CASE("SBIW 0x0100 - 1 → 0x00FF", "[instructions][arithmetic]") {
     OpsRd06K6 ops = {24, 1};
     executeSBIW(s, ops);
     REQUIRE(readRegWord(s, 24) == 0x00FF);
+}
+
+TEST_CASE("ADIW sets signed overflow without carry at 0x7FFF + 1",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    writeRegWord(s, 24, 0x7FFF);
+    executeADIW(s, {24, 1});
+    REQUIRE(readRegWord(s, 24) == 0x8000);
+    REQUIRE(getFlag(s, SregBit::V));
+    REQUIRE(getFlag(s, SregBit::N));
+    REQUIRE_FALSE(getFlag(s, SregBit::C));
+    REQUIRE_FALSE(getFlag(s, SregBit::S));
+}
+
+TEST_CASE("ADIW sets carry without signed overflow at 0xFFFF + 1",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    writeRegWord(s, 24, 0xFFFF);
+    executeADIW(s, {24, 1});
+    REQUIRE(readRegWord(s, 24) == 0x0000);
+    REQUIRE_FALSE(getFlag(s, SregBit::V));
+    REQUIRE(getFlag(s, SregBit::Z));
+    REQUIRE(getFlag(s, SregBit::C));
+}
+
+TEST_CASE("SBIW sets borrow without signed overflow at 0x0000 - 1",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    writeRegWord(s, 24, 0x0000);
+    executeSBIW(s, {24, 1});
+    REQUIRE(readRegWord(s, 24) == 0xFFFF);
+    REQUIRE_FALSE(getFlag(s, SregBit::V));
+    REQUIRE(getFlag(s, SregBit::N));
+    REQUIRE(getFlag(s, SregBit::C));
+}
+
+TEST_CASE("SBIW sets signed overflow without borrow at 0x8000 - 1",
+          "[instructions][arithmetic][regression]") {
+    auto s = freshState();
+    writeRegWord(s, 24, 0x8000);
+    executeSBIW(s, {24, 1});
+    REQUIRE(readRegWord(s, 24) == 0x7FFF);
+    REQUIRE(getFlag(s, SregBit::V));
+    REQUIRE_FALSE(getFlag(s, SregBit::N));
+    REQUIRE_FALSE(getFlag(s, SregBit::C));
+    REQUIRE(getFlag(s, SregBit::S));
 }
 
 // ===========================================================================

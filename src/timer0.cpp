@@ -19,13 +19,11 @@
 // ===========================================================================
 
 #include "timer0.h"
-#include "state.h"
 
 // ── Per-Module State ─────────────────────────────────────────────────────────
 // All Timer0 registers and the prescaler accumulator are stored as file-scope
-// statics.  g_state is a back-reference for interrupt flag propagation.
+// statics.
 
-static AvrState* g_state = nullptr;
 static uint8_t tccr0a = 0;        // Timer/Counter Control Register A
 static uint8_t tccr0b = 0;        // Timer/Counter Control Register B
 static uint8_t tcnt0  = 0;        // Timer/Counter Register (current count)
@@ -41,9 +39,14 @@ static uint16_t prescaler_acc = 0; // Fractional cycle accumulator for prescaler
 // Returns 0 when the clock source is disabled (CS = 0 or undefined).
 // @return clock divider (0 = stopped, 1, 8, 64, 256, or 1024)
 static uint16_t prescalerDivider() {
-    // CS bits are the low 3 bits of TCCR0B
-    uint8_t cs = tccr0b & 0x07;
-    switch (cs) { case 0: return 0; case 1: return 1; case 2: return 8; case 3: return 64; case 4: return 256; case 5: return 1024; default: return 0; }
+    switch (tccr0b & 0x07) {
+        case 1: return 1;
+        case 2: return 8;
+        case 3: return 64;
+        case 4: return 256;
+        case 5: return 1024;
+        default: return 0;
+    }
 }
 
 // Reconstruct the Waveform Generation Mode (WGM[2:0]) from scattered bits:
@@ -57,12 +60,17 @@ static uint8_t wgm() {
 
 // ── Public Interface ─────────────────────────────────────────────────────────
 
-// Store the emulator state pointer so timer0Tick can potentially propagate
-// events (e.g. for future PWM pin updates).
-void timer0SetState(AvrState* state) { g_state = state; }
-
 // Reset all Timer0 registers to their power-on defaults.
-void timer0Reset() { tccr0a = 0; tccr0b = 0; tcnt0 = 0; ocr0a = 0; ocr0b = 0; timsk0 = 0; tifr0 = 0; prescaler_acc = 0; }
+void timer0Reset() {
+    tccr0a = 0;
+    tccr0b = 0;
+    tcnt0 = 0;
+    ocr0a = 0;
+    ocr0b = 0;
+    timsk0 = 0;
+    tifr0 = 0;
+    prescaler_acc = 0;
+}
 
 // Advance the timer by `cycles` CPU clock cycles.
 //

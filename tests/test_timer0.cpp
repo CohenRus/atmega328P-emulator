@@ -1,3 +1,8 @@
+/*
+ * test_timer0.cpp - Timer0, interrupt, and timing integration tests.
+ * Covers register routing, prescalers, waveform modes, flags, and dispatch.
+ */
+
 #include "catch_amalgamated.hpp"
 #include "state.h"
 #include "memory.h"
@@ -33,7 +38,6 @@ static uint8_t readTimerIO(AvrState& s, uint8_t ioAddr) {
 
 TEST_CASE("Timer0: TCNT0 read/write through data-space", "[timer0][io]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x26, 0xAB);  // TCNT0
@@ -42,7 +46,6 @@ TEST_CASE("Timer0: TCNT0 read/write through data-space", "[timer0][io]") {
 
 TEST_CASE("Timer0: TCCR0B read/write through data-space", "[timer0][io]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x03);  // TCCR0B — prescaler /64
@@ -51,7 +54,6 @@ TEST_CASE("Timer0: TCCR0B read/write through data-space", "[timer0][io]") {
 
 TEST_CASE("Timer0: TCCR0A read/write through data-space", "[timer0][io]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x24, 0x42);  // TCCR0A
@@ -61,7 +63,6 @@ TEST_CASE("Timer0: TCCR0A read/write through data-space", "[timer0][io]") {
 
 TEST_CASE("Timer0: OCR0A read/write through data-space", "[timer0][io]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x27, 0x7F);
@@ -70,7 +71,6 @@ TEST_CASE("Timer0: OCR0A read/write through data-space", "[timer0][io]") {
 
 TEST_CASE("Timer0: TIMSK0 read/write through data-space", "[timer0][io]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x4E, 0x01);  // TOIE0 = 1
@@ -79,7 +79,6 @@ TEST_CASE("Timer0: TIMSK0 read/write through data-space", "[timer0][io]") {
 
 TEST_CASE("Timer0: TIFR0 read/write clears on write-1", "[timer0][io]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x03);  // prescaler /64
@@ -101,7 +100,6 @@ TEST_CASE("Timer0: TIFR0 read/write clears on write-1", "[timer0][io]") {
 
 TEST_CASE("Timer0: timer stopped when CS=0", "[timer0][prescaler]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x00);  // CS02:CS00 = 0 → timer stopped
@@ -114,7 +112,6 @@ TEST_CASE("Timer0: timer stopped when CS=0", "[timer0][prescaler]") {
 
 TEST_CASE("Timer0: prescaler /1 advances TCNT0 directly", "[timer0][prescaler]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x01);  // prescaler /1
@@ -125,7 +122,6 @@ TEST_CASE("Timer0: prescaler /1 advances TCNT0 directly", "[timer0][prescaler]")
 
 TEST_CASE("Timer0: prescaler /8 accumulates before advancing", "[timer0][prescaler]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x02);  // prescaler /8
@@ -143,7 +139,6 @@ TEST_CASE("Timer0: prescaler /8 accumulates before advancing", "[timer0][prescal
 
 TEST_CASE("Timer0: prescaler /64 advances at correct rate", "[timer0][prescaler]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x03);  // prescaler /64
@@ -159,7 +154,6 @@ TEST_CASE("Timer0: prescaler /64 advances at correct rate", "[timer0][prescaler]
 
 TEST_CASE("Timer0: normal mode overflow sets TOV0", "[timer0][overflow]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x01);   // prescaler /1
@@ -177,7 +171,6 @@ TEST_CASE("Timer0: normal mode overflow sets TOV0", "[timer0][overflow]") {
 
 TEST_CASE("Timer0: overflow with prescaler /64", "[timer0][overflow]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x03);   // prescaler /64
@@ -195,7 +188,6 @@ TEST_CASE("Timer0: overflow with prescaler /64", "[timer0][overflow]") {
 
 TEST_CASE("Timer0: CTC mode resets TCNT0 on OCR0A match", "[timer0][ctc]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     // WGM2:0 = 010 (CTC). WGM02=0 (TCCR0B[3]=0), WGM01=1 (TCCR0A[1]=1), WGM00=0 (TCCR0A[0]=0)
@@ -214,7 +206,6 @@ TEST_CASE("Timer0: CTC mode resets TCNT0 on OCR0A match", "[timer0][ctc]") {
 }
 TEST_CASE("Timer0: CTC mode does not set TOV0 on wrap", "[timer0][ctc]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
     // WGM2:0 = 010 (CTC). WGM01=1 (TCCR0A[1]=1)
     writeTimerIO(s, 0x24, (1 << 1));  // TCCR0A: WGM01=1
@@ -235,7 +226,6 @@ TEST_CASE("Timer0: CTC mode does not set TOV0 on wrap", "[timer0][ctc]") {
 
 TEST_CASE("Timer0: overflowPending false when interrupt disabled", "[timer0][overflow]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x01);   // prescaler /1, TOIE0 not set
@@ -248,7 +238,6 @@ TEST_CASE("Timer0: overflowPending false when interrupt disabled", "[timer0][ove
 
 TEST_CASE("Timer0: overflowPending true when interrupt enabled", "[timer0][overflow]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x4E, 0x01);   // TOIE0 = 1
@@ -362,18 +351,28 @@ TEST_CASE("Interrupt: highest priority wins", "[interrupt]") {
     REQUIRE(s.pc == 0x0040);   // TIMER0_OVF
 }
 
+TEST_CASE("Interrupt service reports the dispatched vector", "[interrupt][regression]") {
+    auto s = freshState();
+    interruptSetState(&s);
+    interruptReset();
+    setFlag(s, SregBit::I);
+    interruptRaise(InterruptVector::TIMER0_COMPB);
+
+    InterruptVector serviced = InterruptVector::RESET;
+    REQUIRE(interruptService(&serviced));
+    REQUIRE(serviced == InterruptVector::TIMER0_COMPB);
+}
+
 // ===========================================================================
 // End-to-end: Timer0 overflow → interrupt
 // ===========================================================================
 
 TEST_CASE("E2E: Timer0 overflow raises interrupt, ISR runs", "[timer0][interrupt][e2e]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
     interruptSetState(&s);
     interruptReset();
 
-    // Set up Timer0: normal mode, prescaler /64, overflow interrupt enabled
     // Set up Timer0: normal mode, prescaler /64, overflow interrupt enabled
     writeTimerIO(s, 0x24, 0x00);   // TCCR0A: normal mode
     writeTimerIO(s, 0x25, 0x03);   // TCCR0B: prescaler /64
@@ -424,7 +423,6 @@ TEST_CASE("E2E: Timer0 overflow raises interrupt, ISR runs", "[timer0][interrupt
 
 TEST_CASE("E2E: timer0OverflowPending false when TOIE0 disabled", "[timer0][interrupt][e2e]") {
     auto s = freshState();
-    timer0SetState(&s);
     timer0Reset();
 
     writeTimerIO(s, 0x25, 0x01);   // prescaler /1
