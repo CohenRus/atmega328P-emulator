@@ -181,7 +181,14 @@ void uartWrite(uint8_t ioAddr, uint8_t value) {
     switch (ioAddr) {
         // ATmega328P extended I/O mapping (data-space 0xC0-0xC6)
         case 0x00:               break; // UCSR0A — mostly read-only; TXCn write-1-to-clear is harmless to ignore
-        case 0x01: ucsrb = value; break; // UCSR0B
+        case 0x01:                       // UCSR0B
+            ucsrb = value;
+            // If UDRIE0 was just enabled and UDRE is already set (data register
+            // is always empty in the emulator), raise the UDRE interrupt.
+            if (value & (1 << 5)) {
+                interruptRaise(InterruptVector::USART_UDRE);
+            }
+            break;
         case 0x02: ucsrc = value; break; // UCSR0C
         case 0x03:               break; // reserved
         case 0x04: ubrrl = value; break; // UBRR0L
@@ -194,10 +201,23 @@ void uartWrite(uint8_t ioAddr, uint8_t value) {
                 std::cout.put((char)value);
                 std::cout.flush();
             }
+            // TX complete: after transmitting a byte, raise TXC interrupt if enabled.
+            if (ucsrb & (1 << 6)) {
+                interruptRaise(InterruptVector::USART_TX);
+            }
+            // UDRE becomes set again after transmit (data register now empty).
+            if (ucsrb & (1 << 5)) {
+                interruptRaise(InterruptVector::USART_UDRE);
+            }
             break;
         // Legacy ATmega168 I/O mapping (data-space 0x29-0x2D)
         case 0x09: ubrrl = value; break; // UBRRL
-        case 0x0A: ucsrb = value; break; // UCSRB
+        case 0x0A:                       // UCSRB
+            ucsrb = value;
+            if (value & (1 << 5)) {
+                interruptRaise(InterruptVector::USART_UDRE);
+            }
+            break;
         case 0x0B:               break; // UCSRA — read-only
         case 0x0C:                       // UDR — transmit
             if (tuiMode.load()) {
@@ -206,6 +226,12 @@ void uartWrite(uint8_t ioAddr, uint8_t value) {
             } else {
                 std::cout.put((char)value);
                 std::cout.flush();
+            }
+            if (ucsrb & (1 << 6)) {
+                interruptRaise(InterruptVector::USART_TX);
+            }
+            if (ucsrb & (1 << 5)) {
+                interruptRaise(InterruptVector::USART_UDRE);
             }
             break;
         case 0x0D: ucsrc = value; break; // UCSRC

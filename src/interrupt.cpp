@@ -12,13 +12,11 @@
 // - Interrupt dispatch pushes the current PC onto the stack, clears the I
 //   flag (disabling nesting), and jumps to the vector's flash address.
 // - interruptService() must be called after every emulated instruction.
-// - For v1, only TIMER0_OVF is wired; remaining vectors are defined for
-//   forward compatibility.
-// ===========================================================================
+// - TIMER0 overflow/compare-match A/B and USART RX/TX/UDRE interrupts are wired;
+//   remaining vectors are defined for forward compatibility.
 
 #include "interrupt.h"
-#include "timer0.h"
-#include "state.h"
+#include <cstdio>
 #include "memory.h"
 
 // ===========================================================================
@@ -120,23 +118,35 @@ bool interruptService() {
 
     InterruptVector vec = static_cast<InterruptVector>(vecNum);
 
+    // Validate the vector address points to valid code.  Erased flash
+    // (0xFFFF) means the interrupt vector is not configured — treat as a
+    // silent no-op rather than dispatching to a guaranteed crash.
+    uint16_t vecAddr = vectorAddr(vec);
+    if (vecAddr + 1 >= AVR_FLASH_SIZE) {
+        fprintf(stderr, "interrupt: vector %u at 0x%04X out of flash bounds — skipping\n",
+                vecNum, vecAddr);
+        pending &= ~(1U << (vecNum - 1));
+        return false;
+    }
+    uint16_t vecWord = g_state->flash[vecAddr] | (g_state->flash[vecAddr + 1] << 8);
+    if (vecWord == 0xFFFF) {
+        fprintf(stderr, "interrupt: vector %u at 0x%04X is 0xFFFF (unprogrammed) — skipping\n",
+                vecNum, vecAddr);
+        pending &= ~(1U << (vecNum - 1));
+        return false;
+    }
+
     // Acknowledge: clear the pending flag so it doesn't re-fire immediately.
-    // This clears the bit in the pending mask; the physical TIFR0 flag is
-    // cleared separately via timer0AckOverflow() when the ISR reads TIFR0.
     pending &= ~(1U << (vecNum - 1));
 
     // Save return address: push the current PC so RETI can pop it back.
-    // The pushed address points to the instruction that would have executed
-    // next had the interrupt not fired.
     pushWord(*g_state, g_state->pc);
 
     // Disable global interrupts (clear I flag) to prevent nesting.
-    // The ISR's RETI instruction will restore this flag from the stack.
     clearFlag(*g_state, SregBit::I);
 
     // Redirect execution to the interrupt handler.
-    // The vector table entry at this address should contain an RJMP to the ISR.
-    g_state->pc = vectorAddr(vec);
+    g_state->pc = vecAddr;
 
     return true;
 }

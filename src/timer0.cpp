@@ -82,12 +82,16 @@ void timer0Tick(uint16_t cycles) {
     uint16_t div = prescalerDivider();
     if (div == 0) return;  // Timer is stopped (no clock source selected)
 
+    // Capture WGM mode once — it could change if firmware writes TCCR0A/B
+    // between ticks, but within a single tick batch the mode is stable.
+    uint8_t mode = wgm();
+
     // Accumulate fractional cycles.  This handles instructions with
     // different cycle counts correctly without per-tick overhead.
     prescaler_acc += cycles;
 
     // Select TOP: CTC mode uses OCR0A as the top; other modes use 0xFF.
-    uint16_t top = (wgm() == T0_WGM_CTC) ? ocr0a : 0xFF;
+    uint16_t top = (mode == T0_WGM_CTC) ? ocr0a : 0xFF;
 
     // Drain the accumulator one prescaler tick at a time.
     while (prescaler_acc >= div) {
@@ -104,7 +108,7 @@ void timer0Tick(uint16_t cycles) {
             tcnt0 = 0;
             // TOV0 is set on overflow in Normal and Fast PWM modes,
             // but NOT in CTC mode (WGM=2) where only OCF0A fires.
-            if (wgm() != T0_WGM_CTC) {
+            if (mode != T0_WGM_CTC) {
                 tifr0 |= (1 << T0_TOV0);
             }
         } else {

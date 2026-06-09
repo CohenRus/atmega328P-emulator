@@ -24,28 +24,12 @@ set(CORE_SOURCES
     src/interrupt.cpp
 )
 
-if(EMSCRIPTEN)
-    add_executable(emulator wasm/bindings.cpp ${CORE_SOURCES})
-
-    target_include_directories(emulator PRIVATE include)
-
-    target_link_options(emulator PRIVATE
-        -sEXPORT_ES6=1
-        -sMODULARIZE=1
-        -sEXPORT_NAME=createEmulator
-        -sALLOW_MEMORY_GROWTH=1
-        --bind
-    )
-
-    set_target_properties(emulator PROPERTIES SUFFIX ".js")
-else()
-    add_executable(emulator src/main.cpp ${CORE_SOURCES})
-    target_link_libraries(emulator
-        PRIVATE ftxui::ftxui
-        PRIVATE ftxui::screen
-        PRIVATE ftxui::dom
-        PRIVATE ftxui::component
-    )
-    target_compile_options(emulator PRIVATE -Wall -Wextra -Wpedantic)
-    add_subdirectory(tests)
-endif()
+add_executable(emulator src/main.cpp ${CORE_SOURCES})
+target_link_libraries(emulator
+    PRIVATE ftxui::ftxui
+    PRIVATE ftxui::screen
+    PRIVATE ftxui::dom
+    PRIVATE ftxui::component
+)
+target_compile_options(emulator PRIVATE -Wall -Wextra -Wpedantic)
+add_subdirectory(tests)

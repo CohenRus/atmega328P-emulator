@@ -46,13 +46,14 @@ static void skipNextInstruction(AvrState& state, const char* context);
 
 // Runs the fetch-decode-execute cycle indefinitely.  Each iteration:
 //   1. Polls UART for incoming bytes (non-blocking).
-//   2. Services any pending interrupts (may dispatch and skip instruction fetch).
-//   3. Fetches the next 16-bit instruction word from flash at state.pc.
-//   4. Decodes it; reads a second word if it's a 32-bit instruction.
-//   5. Clears memory fault, executes the instruction, checks for faults.
-//   6. Advances cycle count and peripheral timing (Timer0).
-//   7. Handles Timer0 overflow — either raises an interrupt or emulates
-//      the ISR in firmware when the vector table points to __bad_interrupt.
+//   2. Checks peripheral flags (Timer0 overflow/compare-match, UART RX/TX/UDRE)
+//      and raises pending interrupt vectors.
+//   3. Services any pending interrupts via the interrupt controller (may dispatch
+//      and skip instruction fetch if an interrupt fires).
+//   4. Fetches the next 16-bit instruction word from flash at state.pc.
+//   5. Decodes it; reads a second word if it's a 32-bit instruction.
+//   6. Clears memory fault, executes the instruction, checks for faults.
+//   7. Advances cycle count and peripheral timing (Timer0).
 //   8. Synchronizes with wall-clock to match real-time execution speed.
 // @param state — the complete emulator runtime state (modified in place)
 // @return false on fatal error (bad PC, unknown opcode, memory fault);
@@ -66,19 +67,10 @@ bool executeProgram(AvrState& state) {
   interruptSetState(&state);
   interruptReset();
 
-  // Pre-compute the bogus-vector check once — the TIMER0_OVF vector
-  // (vector 17) is at byte offset (17-1)*4 = 0x40 with 4-byte JMP entries.
-  uint16_t vecWord1 = state.flash[0x0040] | (state.flash[0x0041] << 8);
-  uint16_t vecWord2 = state.flash[0x0042] | (state.flash[0x0043] << 8);
-  bool hasBogusOvfVector = false;
-  if ((vecWord1 & 0xFE0E) == 0x940C) {  // JMP opcode mask
-      OpsK22 decoded = decodeK22(vecWord1, vecWord2);
-      if (decoded.k == 0x005D) hasBogusOvfVector = true;  // __bad_interrupt
-  }
-  bool useBogusOvf = hasBogusOvfVector && (state.timer0_millis_addr != 0);
   // Wall-clock anchor for real-time synchronization.
   auto wall_start = std::chrono::steady_clock::now();
   uint16_t instruction;
+
   while (true) {
     // ── Cooperative stop check ──
     if (g_emu_stop.load(std::memory_order_relaxed)) {
@@ -86,46 +78,12 @@ bool executeProgram(AvrState& state) {
     }
 
     uartPoll();
-    // Runs at the top so overflows/compare-matches that occurred while
-    // I=0 (e.g. during ISR) are raised before the next user instruction.
+    // After each instruction, check for peripheral interrupt conditions
+    // and raise the corresponding interrupt vectors.  These fire at the
+    // top of the next instruction cycle so the PC pushed on dispatch
+    // points to the next instruction that would have executed.
     if (timer0OverflowPending()) {
-        if (useBogusOvf) {
-            uint16_t addr = state.timer0_millis_addr;
-
-            static uint64_t lastLog = 0;
-            if (state.cycle_count - lastLog >= 16000000) {
-                lastLog = state.cycle_count;
-                uint32_t ms = (uint32_t)state.sram[addr] | ((uint32_t)state.sram[addr+1] << 8)
-                           | ((uint32_t)state.sram[addr+2] << 16) | ((uint32_t)state.sram[addr+3] << 24);
-                fprintf(stderr, "[tick] cycle=%llu millis=%u ovf=%u\n",
-                        (unsigned long long)state.cycle_count, ms,
-                        (unsigned)(state.sram[addr+4] | (state.sram[addr+5] << 8)
-                                  | (state.sram[addr+6] << 16) | (state.sram[addr+7] << 24)));
-            }
-
-            uint32_t m = (uint32_t)state.sram[addr]
-                       | ((uint32_t)state.sram[addr+1] << 8)
-                       | ((uint32_t)state.sram[addr+2] << 16)
-                       | ((uint32_t)state.sram[addr+3] << 24);
-            m++;
-            state.sram[addr]   = (uint8_t)(m & 0xFF);
-            state.sram[addr+1] = (uint8_t)((m >> 8) & 0xFF);
-            state.sram[addr+2] = (uint8_t)((m >> 16) & 0xFF);
-            state.sram[addr+3] = (uint8_t)((m >> 24) & 0xFF);
-
-            uint32_t ov = (uint32_t)state.sram[addr+4]
-                        | ((uint32_t)state.sram[addr+5] << 8)
-                        | ((uint32_t)state.sram[addr+6] << 16)
-                        | ((uint32_t)state.sram[addr+7] << 24);
-            ov++;
-            state.sram[addr+4] = (uint8_t)(ov & 0xFF);
-            state.sram[addr+5] = (uint8_t)((ov >> 8) & 0xFF);
-            state.sram[addr+6] = (uint8_t)((ov >> 16) & 0xFF);
-            state.sram[addr+7] = (uint8_t)((ov >> 24) & 0xFF);
-            timer0AckOverflow();
-        } else {
-            interruptRaise(InterruptVector::TIMER0_OVF);
-        }
+        interruptRaise(InterruptVector::TIMER0_OVF);
     }
     if (timer0CompAPending()) {
         interruptRaise(InterruptVector::TIMER0_COMPA);
