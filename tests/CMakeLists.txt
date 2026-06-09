@@ -6,6 +6,7 @@ add_executable(emulator_test
     test_instructions.cpp
     test_timer0.cpp
     ../src/decoder.cpp
+    ../src/disasm.cpp
     ../src/error.cpp
     ../src/memory.cpp
     ../src/uart.cpp

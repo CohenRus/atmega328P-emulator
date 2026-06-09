@@ -15,7 +15,6 @@
 #include "interrupt.h"
 #include "memory.h"
 #include "timer0.h"
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -26,8 +25,7 @@
 // Cooperative stop flag.  Set to true from any thread to request the
 // execution loop to exit cleanly at the next iteration boundary.
 std::atomic<bool> g_emu_stop(false);
-// ---------------------------------------------------------------------------
-// SREG bit indices (matches ATmega328P datasheet §6.3)
+std::atomic<bool> g_emu_pause(false);
 // ---------------------------------------------------------------------------
 #define SREG_C  0  // Carry
 #define SREG_Z  1  // Zero
@@ -77,6 +75,11 @@ bool executeProgram(AvrState& state) {
         return true;  // clean exit requested by TUI
     }
 
+    // ── Pause check ──
+    while (g_emu_pause.load(std::memory_order_relaxed) &&
+           !g_emu_stop.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     uartPoll();
     // After each instruction, check for peripheral interrupt conditions
     // and raise the corresponding interrupt vectors.  These fire at the

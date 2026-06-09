@@ -16,6 +16,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CORE_SOURCES
     src/error.cpp
     src/decoder.cpp
+    src/disasm.cpp
     src/uart.cpp
     src/memory.cpp
     src/loader.cpp

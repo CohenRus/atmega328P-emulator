@@ -40,6 +40,10 @@ bool clearState(AvrState& state);
 // top of each cycle and returns true (clean exit) when set.
 extern std::atomic<bool> g_emu_stop;
 
+// Set to true from the TUI (Space key) to pause execution.
+// The loop spin-waits while this is true and g_emu_stop is false.
+extern std::atomic<bool> g_emu_pause;
+
 // Decodes operands from the raw instruction word(s) based on op.fmt,
 // then calls the matching instruction executor.  Aliased opcodes
 // dispatch to the canonical implementation.
