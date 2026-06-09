@@ -6,9 +6,8 @@
  * indices, immediates, and bit offsets from encoded instruction words.
  *
  * Design:
- *   - decodeInstruction() performs a linear scan of OPCODE_TABLE[]. The
- *     table is ordered so that more-specific masks (e.g. LDD) appear
- *     before less-specific ones (e.g. LD base).
+ *   - decodeInstruction() caches results by 16-bit instruction word. Cache
+ *     misses scan OPCODE_TABLE[] from more-specific to broader masks.
  *   - Each decoded opcode carries an AvrFmt tag. The execute loop
  *     dispatches to the matching operand decoder and then to the
  *     instruction handler, keeping bit-twiddling out of the executor.
@@ -175,10 +174,8 @@ enum class AvrFmt {
 // Opcode table entry — one row per unique (mask, pattern) pair.
 // ---------------------------------------------------------------------------
 
-// Each entry describes one decoding rule. The table is scanned linearly
-// by decodeInstruction(); entries with narrower masks (e.g. 0xFFFF for
-// exact-match instructions like NOP) naturally take priority over
-// broader ones when they appear earlier.
+// Each entry describes one decoding rule. On a cache miss, entries with
+// narrower masks naturally take priority over broader entries listed later.
 struct Opcode {
     uint16_t    mask;       // Bits that must match exactly  (AND with instruction)
     uint16_t    code;       // Expected result after masking
@@ -189,9 +186,8 @@ struct Opcode {
     const char* mnemonic;   // Canonical assembly mnemonic for disassembly/debugging
 };
 
-// The complete opcode table. Ordered so that narrower masks (exact
-// matches, LDD variants) appear before broader masks (LD base).
-// Scanned sequentially by decodeInstruction() on every fetch.
+// The complete opcode table. Ordered so that narrower masks (exact matches,
+// LDD variants) appear before broader masks (LD base).
 static const Opcode OPCODE_TABLE[] = {
     // mask   code   op                    fmt              words  cyc  mnemonic
 

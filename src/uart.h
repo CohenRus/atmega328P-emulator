@@ -49,9 +49,9 @@ bool uartHasRxPending();
 // In TUI mode this is a no-op.
 bool uartInit();
 
-// Call once per emulated instruction cycle.  In headless mode, checks
-// stdin for a pending byte.  In TUI mode, drains the injection queue
-// into the single-byte hardware buffer.
+// Poll periodically from the execution loop. In headless mode, checks stdin
+// for a pending byte. In TUI mode, drains the injection queue into the
+// single-byte hardware buffer.
 void uartPoll();
 
 // Return the value firmware sees when reading an I/O register in the

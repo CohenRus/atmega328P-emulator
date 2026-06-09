@@ -148,7 +148,7 @@ Data Space (0x0000 → 0x08FF):
 
 - Track `cycle_count` across all instructions, pace against real time
 - 16 MHz → each cycle = 62.5 ns
-- After every instruction: compute expected wall-clock position, sleep if ahead
+- Every 16,000 cycles: compute expected wall-clock position, sleep if ahead
 
 ---
 ### What's Not Yet Implemented

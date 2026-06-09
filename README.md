@@ -177,12 +177,15 @@ normal interrupt controller.
 ### Wall-Clock Sync
 
 ```cpp
-auto target = wall_start + μs(cycle_count * 50'000 / 16'000'000);
-if (target - now > 100μs) sleep_until(target);
+if (cycle_count >= next_sync_cycle) {
+  auto target = wall_start + μs(cycle_count * 1'000'000 / 16'000'000);
+  if (target - now > 100μs) sleep_until(target);
+}
 ```
 
-Sleeps between instructions when ahead of schedule.  ~100µs threshold balances
-precision against syscall overhead.
+The host clock is sampled every 16,000 emulated cycles instead of after every
+instruction. This preserves real-time pacing without making clock reads the
+execution bottleneck.
 
 ## Resources
 

@@ -1,7 +1,7 @@
 /*
  * decoder.cpp — Implementation of the AVR instruction decoder.
  *
- * decodeInstruction() performs a linear scan of the opcode table.
+ * decodeInstruction() uses an immutable lookup table built from the opcode table.
  * Each operand decoder unpacks one AvrFmt's bit layout.
  *
  * All decoders assume the instruction has already been matched and the
@@ -10,21 +10,41 @@
 
 #include "decoder.h"
 
-// Match a raw 16-bit instruction word against the opcode table.
-// Returns the first matching entry (mask & instruction == code).
-// The table is ordered so that narrower masks appear before broader ones.
+#include <array>
+
+namespace {
+
+struct CachedOpcode {
+  Opcode opcode{};
+  bool valid = false;
+};
+
+const std::array<CachedOpcode, 65536>& opcodeCache() {
+  static const auto cache = [] {
+    std::array<CachedOpcode, 65536> entries{};
+    for (uint32_t instruction = 0; instruction < entries.size(); ++instruction) {
+      for (const Opcode& opcode : OPCODE_TABLE) {
+        if ((instruction & opcode.mask) == opcode.code) {
+          entries[instruction] = {opcode, true};
+          break;
+        }
+      }
+    }
+    return entries;
+  }();
+  return cache;
+}
+
+} // namespace
+
+// Look up a raw 16-bit instruction word in the precomputed decode table.
 // @param instruction — the 16-bit opcode to decode
 // @param out         — [out] set to the matched Opcode on success
 // @return true if a matching entry was found
 bool decodeInstruction(uint16_t instruction, Opcode& out) {
-  for (const Opcode& opcode : OPCODE_TABLE) {
-    uint16_t op = instruction & opcode.mask;
-    if (op == opcode.code) {
-      out = opcode;
-      return true;
-    }
-  }
-  return false;
+  const CachedOpcode& cached = opcodeCache()[instruction];
+  if (cached.valid) out = cached.opcode;
+  return cached.valid;
 }
 
 // ---------------------------------------------------------------------------

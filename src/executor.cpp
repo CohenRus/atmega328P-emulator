@@ -22,7 +22,9 @@
 #include <thread>
 // ATmega328P nominal clock: 16 MHz
 #define AVR_CPU_HZ 16000000ULL
-#define WALL_CLOCK_US_PER_SECOND 50000ULL
+#define WALL_CLOCK_US_PER_SECOND 1000000ULL
+#define UART_POLL_INTERVAL_CYCLES 1024ULL
+#define WALL_CLOCK_SYNC_INTERVAL_CYCLES 16000ULL
 
 // Cooperative stop flag.  Set to true from any thread to request the
 // execution loop to exit cleanly at the next iteration boundary.
@@ -86,6 +88,8 @@ bool executeProgram(AvrState& state) {
   interruptReset();
   publishSnapshot(state);
   uint64_t next_snapshot_cycle = 160000;
+  uint64_t next_uart_poll_cycle = 0;
+  uint64_t next_wall_sync_cycle = WALL_CLOCK_SYNC_INTERVAL_CYCLES;
 
   // Wall-clock anchor for real-time synchronization.
   auto wall_start = std::chrono::steady_clock::now();
@@ -103,7 +107,10 @@ bool executeProgram(AvrState& state) {
            !g_emu_stop.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    uartPoll();
+    if (state.cycle_count >= next_uart_poll_cycle) {
+      uartPoll();
+      next_uart_poll_cycle = state.cycle_count + UART_POLL_INTERVAL_CYCLES;
+    }
     // After each instruction, check for peripheral interrupt conditions
     // and raise the corresponding interrupt vectors.  These fire at the
     // top of the next instruction cycle so the PC pushed on dispatch
@@ -174,9 +181,9 @@ bool executeProgram(AvrState& state) {
       next_snapshot_cycle = state.cycle_count + 160000;
     }
 
-    // ── Wall-clock synchronization ──
-    // Sleep only when more than 100 µs ahead to balance precision vs syscall cost.
-    {
+    // Checking the host clock on every AVR instruction is more expensive than
+    // the work being emulated. Pace in one-millisecond cycle batches instead.
+    if (state.cycle_count >= next_wall_sync_cycle) {
         auto target_wall = wall_start + std::chrono::microseconds(
             state.cycle_count * WALL_CLOCK_US_PER_SECOND / AVR_CPU_HZ);
         auto now = std::chrono::steady_clock::now();
@@ -184,6 +191,7 @@ bool executeProgram(AvrState& state) {
         if (ahead > std::chrono::microseconds(100)) {
             std::this_thread::sleep_until(target_wall);
         }
+        next_wall_sync_cycle = state.cycle_count + WALL_CLOCK_SYNC_INTERVAL_CYCLES;
     }
   }
 }
