@@ -68,8 +68,8 @@ void  clearIOBit(AvrState& state, uint8_t ioAddr, uint8_t bit);
 
 // ── Stack ────────────────────────────────────────────────────────────────────
 //
-// SP points to the next free byte.  pushByte decrements SP, then writes.
-// popByte reads, then increments SP.  Stack lives in SRAM (data-space
+// SP points at the last used stack address. PUSH writes at SP, then decrements;
+// POP increments SP, then reads. Stack lives in SRAM (data-space
 // addresses 0x0100–0x08FF).
 
 void     pushByte(AvrState& state, uint8_t value);

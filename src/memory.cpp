@@ -329,51 +329,50 @@ void clearIOBit(AvrState& state, uint8_t ioAddr, uint8_t bit) {
 // ===========================================================================
 
 // Push a byte onto the hardware stack.
-// SP is decremented first (stack grows downward), then the value is written.
+// The value is written at SP, then SP is decremented (stack grows downward).
 // Detects overflow if SP would fall into the I/O register region (< 0x0100).
 // @param state — emulator state (mutable)
 // @param value — byte to push
 void pushByte(AvrState& state, uint8_t value) {
-    if (state.sp <= STACK_BOTTOM) {
+    if (state.sp < STACK_BOTTOM || state.sp > DATA_SPACE_END) {
       faultStack("stack overflow (SP would drop below 0x0100)");
       return;
     }
-    // Pre-decrement SP: ATmega328P stack grows downward from RAMEND.
-    state.sp--;
+    // AVR PUSH is post-decrement. Compiler epilogues address saved registers
+    // relative to the decremented SP, so changing this ordering shifts every
+    // stack slot and corrupts restored registers.
     writeDataByte(state, state.sp, value);
+    state.sp--;
 }
 
 // Pop a byte from the hardware stack.
-// SP is incremented after reading (post-increment), restoring one byte of stack space.
+// SP is incremented first, then the value is read.
 // Detects underflow if SP would go above DATA_SPACE_END (0x08FF).
 // @param state — emulator state (mutable)
 // @return byte popped from stack, or 0 on underflow (fault raised)
 uint8_t popByte(AvrState& state) {
-    if (state.sp > DATA_SPACE_END) {
+    if (state.sp >= DATA_SPACE_END) {
       faultStack("stack underflow (SP above RAMEND 0x08FF)");
       return 0;
     }
-    // Post-increment: read at current SP, then move SP back up.
-    uint8_t value = readDataByte(state, state.sp);
+    // AVR POP is pre-increment, the inverse of PUSH's post-decrement.
     state.sp++;
-    return value;
+    return readDataByte(state, state.sp);
 }
 
 // Push a 16-bit word onto the stack.
-// Low byte is pushed first (occupies the higher stack address),
-// high byte is pushed second (occupies the lower address).
+// Low byte is pushed first (at the higher address), then the high byte.
 // This matches the ATmega328P little-endian byte order.
 // @param state — emulator state (mutable)
 // @param value — 16-bit word to push
 void pushWord(AvrState& state, uint16_t value) {
-    // Low byte first (higher stack address), high byte second (lower address)
+    // Low byte first (higher address), high byte second (lower address).
     pushByte(state, (uint8_t)(value & 0xFF));
     pushByte(state, (uint8_t)(value >> 8));
 }
 
 // Pop a 16-bit word from the stack.
-// High byte is popped first (from the lower stack address),
-// low byte is popped second (from the higher address).
+// High byte is popped first (from the lower address), then the low byte.
 // @param state — emulator state (mutable)
 // @return 16-bit word assembled as (hi << 8) | lo
 uint16_t popWord(AvrState& state) {

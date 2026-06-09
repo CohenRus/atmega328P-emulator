@@ -344,7 +344,7 @@ TEST_CASE("PUSH then POP restores register", "[instructions][stack]") {
     OpsRd ops = {5};
     executePUSH(s, ops);
     REQUIRE(s.sp == origSp - 1);
-    REQUIRE(readDataByte(s, s.sp) == 0x42);
+    REQUIRE(readDataByte(s, origSp) == 0x42);
     s.r[5] = 0x00;
     executePOP(s, ops);
     REQUIRE(s.r[5] == 0x42);
@@ -355,11 +355,33 @@ TEST_CASE("pushWord/popWord round-trip 0xABCD", "[instructions][stack]") {
     auto s = freshState();
     pushWord(s, 0xABCD);
     // pushWord pushes low byte (0xCD) first, then high byte (0xAB)
-    // So: [SP-1]=0xCD, [SP-2]=0xAB
-    REQUIRE(readDataByte(s, s.sp) == 0xAB);     // SP points to high byte (lower addr)
-    REQUIRE(readDataByte(s, s.sp + 1) == 0xCD); // SP+1 = low byte
+    // So: [SP+1]=0xAB, [SP+2]=0xCD after both post-decrements.
+    REQUIRE(readDataByte(s, s.sp + 1) == 0xAB);
+    REQUIRE(readDataByte(s, s.sp + 2) == 0xCD);
     uint16_t w = popWord(s);
     REQUIRE(w == 0xABCD);
+}
+
+TEST_CASE("compiler-style stack frame restores saved pointer registers",
+          "[instructions][stack][regression]") {
+    auto s = freshState();
+    const uint16_t originalSp = s.sp;
+    s.r[28] = 0x34;
+    s.r[29] = 0x12;
+
+    // Equivalent to avr-gcc's PUSH r28; PUSH r29; IN Y,SP prologue.
+    pushByte(s, s.r[28]);
+    pushByte(s, s.r[29]);
+    writeRegWord(s, 28, s.sp);
+
+    // avr-libc epilogues restore the saved pair from Y+1 and Y+2.
+    uint8_t savedHigh = readDataByte(s, readRegWord(s, 28) + 1);
+    uint8_t savedLow = readDataByte(s, readRegWord(s, 28) + 2);
+    s.r[29] = savedHigh;
+    s.r[28] = savedLow;
+    s.sp = originalSp;
+
+    REQUIRE(readRegWord(s, 28) == 0x1234);
 }
 
 // ===========================================================================
@@ -523,11 +545,10 @@ TEST_CASE("ICALL pushes return and jumps via Z", "[instructions][call]") {
 
 TEST_CASE("RET restores PC from stack", "[instructions][call]") {
     auto s = freshState();
-    // pushWord(0x1234): high byte (0x12) at lower addr, low byte (0x34) at higher addr
+    // After pushWord, SP is below both bytes: high at SP+1, low at SP+2.
     s.sp = 0x08FD;
-    writeDataByte(s, 0x08FD, 0x12); // high byte at SP (lower addr)
-    writeDataByte(s, 0x08FE, 0x34); // low byte at SP+1 (higher addr)
-    s.sp = 0x08FD;
+    writeDataByte(s, 0x08FE, 0x12);
+    writeDataByte(s, 0x08FF, 0x34);
     executeRET(s);
     REQUIRE(s.pc == 0x1234);
     REQUIRE(s.sp == 0x08FF);
@@ -536,9 +557,8 @@ TEST_CASE("RET restores PC from stack", "[instructions][call]") {
 TEST_CASE("RETI restores PC and sets I", "[instructions][call]") {
     auto s = freshState();
     s.sp = 0x08FD;
-    writeDataByte(s, 0x08FD, 0x56); // high byte
-    writeDataByte(s, 0x08FE, 0x78); // low byte
-    s.sp = 0x08FD;
+    writeDataByte(s, 0x08FE, 0x56);
+    writeDataByte(s, 0x08FF, 0x78);
     executeRETI(s);
     REQUIRE(s.pc == 0x5678);
     REQUIRE(getFlag(s, SregBit::I));

@@ -1,18 +1,13 @@
 ---
 marp: true
 theme: uncover
-class:
-  - lead
-  - invert
 paginate: true
 ---
 <style>
-section { font-size: 1.3em; }
+section { font-size: 1.3em; text-align: left; }
 code   { font-size: 0.9em; }
 table  { font-size: 0.9em; }
 </style>
-
-<!-- _class: lead invert -->
 
 ## **ATmega328P Emulator**
 Building an AVR Emulator in C++20
@@ -20,8 +15,6 @@ Building an AVR Emulator in C++20
 Cohen Russell
 
 ---
-
-<!-- _class: default -->
 
 ### What?
 An emulator is software that pretends to be hardware — it reads real compiled firmware and executes it instruction-by-instruction, cycle-by-cycle.
@@ -74,7 +67,7 @@ The emulator holds the entire CPU in one struct
 | **Program Counter** | 16-bit | Byte address into flash |
 | **Stack Pointer** | 16-bit | Grows downward from top of SRAM |
 | **SREG** | 8-bit | Status register flags |
-| **Flash** | 32 KB | Program memory  |
+| **Flash** | 32 KB | Program memory |
 | **SRAM** | 2304 B | Data space |
 | **EEPROM** | 1 KB | Non-volatile storage |
 | **Cycle count** | 64-bit | Total elapsed CPU cycles |
@@ -87,21 +80,18 @@ The ATmega328P uses a **single 16-bit address space** for everything — registe
 
 ```
 Data Space (0x0000 → 0x08FF):
-┌──────────────────┐ 
-│  32 GP Registers │ 0x0000 
+┌──────────────────┐
+│  32 GP Registers │ 0x0000
 │                  │  R0–R31 live here, not in a separate register file
-├──────────────────┤ 
-│  64 I/O Registers│ 0x0020 
+├──────────────────┤
+│  64 I/O Registers│ 0x0020
 │                  │  Timer0, UART, PORTB/D, etc. — IN/OUT instructions
-├──────────────────┤ 
 │ 160 Ext I/O Regs │ 0x0060
 │                  │  Additional peripheral registers (LD/ST access)
-├──────────────────┤ 
 │                  │ 0x0100
 │  2048 B SRAM     │  Stack + .data + .bss + heap
 │                  │
-└──────────────────┘ 
-```
+└──────────────────┘
 
 ---
 
@@ -165,8 +155,24 @@ Data Space (0x0000 → 0x08FF):
 - Result: `delay(1000)` takes 1 second ± negligible drift, not 1 millisecond
 
 ---
+### What's Not Yet Implemented
 
-<!-- _class: lead -->
+**Major peripherals:**
+
+- **GPIO** — PORTB/C/D registers exist in the memory map but pin I/O is not wired; no `digitalWrite`, no `pinMode`
+- **Timer1** (16-bit) and **Timer2** (8-bit async) — registers not emulated, interrupts never fire
+- **ADC** — analog-to-digital converter not started
+- **SPI, I2C/TWI** — serial protocols not implemented
+
+**Deferred details:**
+
+- **Sleep modes** — SLEEP instruction is a NOP; SMCR register ignored
+- **Watchdog timer** — WDR instruction is a NOP
+- **Full SPM** — direct flash write works, but SPMCSR, page buffer, and RWW/NRWW sections are deferred
+- **EEPROM persistence** — array exists in state but isn't saved to disk
+- **PWM pin output** — Timer0 WGM modes compute flags correctly but don't drive output pins
+
+---
 
 # Questions?
 
